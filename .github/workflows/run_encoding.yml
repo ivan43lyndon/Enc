@@ -1,0 +1,31 @@
+name: Video Encoding Robot
+on:
+  workflow_dispatch:      # This creates the "Run" button in the GitHub UI
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # This gives the job 6 hours to finish
+    timeout-minutes: 360 
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install System Tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Install Python Libraries
+        run: |
+          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+
+      - name: Run Encoding
+        env:
+          DRIVE_JSON: ${{ secrets.DRIVE_JSON }}
+        run: python encode.py
