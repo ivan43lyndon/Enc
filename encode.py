@@ -111,13 +111,16 @@ def get_video_metadata(input_file):
     cmd_s = ['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=width,height,avg_frame_rate', '-of', 'csv=p=0', input_file]
     cmd_d = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', input_file]
     try:
-        s_res = subprocess.run(cmd_s, capture_output=True, text=True).stdout.strip().split(',')
+        # We redirect stderr to devnull so the filename isn't printed on failure
+        s_res = subprocess.run(cmd_s, capture_output=True, text=True, stderr=subprocess.DEVNULL).stdout.strip().split(',')
         w, h = int(s_res[0]), int(s_res[1])
         num, den = s_res[2].split('/')
         fps = float(num) / float(den) if float(den) != 0 else 30.0
-        d_res = subprocess.run(cmd_d, capture_output=True, text=True).stdout.strip()
+        d_res = subprocess.run(cmd_d, capture_output=True, text=True, stderr=subprocess.DEVNULL).stdout.strip()
         return w, h, float(d_res), fps
-    except: return 0, 0, 0.0, 30.0
+    except Exception:
+        # If it fails, we don't print the error, just return defaults
+        return 0, 0, 0.0, 30.0
 
 def run_ffmpeg_process(cmd, duration, file_label, target_size, desc, batch_str):
     print(f"\n--- {desc} ---")
@@ -213,7 +216,7 @@ def process_video(input_path, output_path, data, batch_str, file_label):
             for s in segment_files: f.write(f"file '{os.path.abspath(s)}'\n")
             
         concat_cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path, '-c', 'copy', '-movflags', '+faststart', output_path]
-        subprocess.run(concat_cmd, capture_output=True)
+        subprocess.run(concat_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         
         # Cleanup temp parts
         shutil.rmtree(temp_work_dir)
