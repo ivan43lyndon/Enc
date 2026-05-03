@@ -41,7 +41,9 @@ def download_file(service, file_id, local_path):
     return local_path
 
 def upload_file(service, local_path, folder_id):
-    """Uploads file with fixed storage quota logic."""
+    """Uploads file and attempts to transfer ownership to avoid quota issues."""
+    YOUR_MAIN_EMAIL = "ivan43lyndon4@gmail.com" # <--- CHANGE THIS TO YOUR REAL EMAIL
+    
     file_metadata = {
         'name': os.path.basename(local_path), 
         'parents': [folder_id]
@@ -49,12 +51,12 @@ def upload_file(service, local_path, folder_id):
     
     media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=10*1024*1024)
     
-    # We add supportsAllDrives=True to ensure it uses the shared folder's logic
+    # 1. Create the file
     request = service.files().create(
         body=file_metadata, 
         media_body=media, 
         fields='id',
-        supportsAllDrives=True  # This is the crucial addition
+        supportsAllDrives=True
     )
     
     response = None
@@ -69,15 +71,29 @@ def upload_file(service, local_path, folder_id):
                 sys.stdout.write(f"\r📤 Upload Progress: [{percent}%] ")
                 sys.stdout.flush()
         except Exception as e:
-            # If we still see "storageQuotaExceeded", we need a different strategy
-            if "storageQuotaExceeded" in str(e):
-                print(f"\n❌ ERROR: Google is blocking the bot's storage.")
-                print("FIX: Go to your Drive folder > Right-click > Share > Make sure the bot is an EDITOR.")
-                sys.exit(1)
             print(f"\n⚠️ Connection lost, retrying... ({e})")
-            time.sleep(5) 
+            time.sleep(5)
             
-    print(f"\n✅ Upload Complete: {fname}")
+    file_id = response.get('id')
+    print(f"\n✅ Uploaded. Transferring ownership to {YOUR_MAIN_EMAIL}...")
+
+    # 2. Transfer Ownership to YOU so it uses YOUR storage
+    try:
+        permission = {
+            'type': 'user',
+            'role': 'owner',
+            'emailAddress': YOUR_MAIN_EMAIL
+        }
+        service.permissions().create(
+            fileId=file_id,
+            body=permission,
+            transferOwnership=True,
+            supportsAllDrives=True
+        ).execute()
+        print("👑 Ownership transferred successfully!")
+    except Exception as e:
+        print(f"⚠️ Could not transfer ownership: {e}")
+        print("Note: If this is a personal (non-business) Gmail, transfer might be restricted.")
 
 # --- 3. ORIGINAL ENCODING LOGIC ---
 
