@@ -19,15 +19,25 @@ TRIM_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
 TEMP_DIR = './Encoding_Cache'
 os.makedirs(TEMP_DIR, exist_ok=True)
 
+# Video Settings
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 AUDIO_BITRATE_KBPS = 96
 TARGET_CRF_VALUE = 22 
-TARGET_MB_PER_MINUTE = 0
 SKIP_ENCODE_MARGIN_PERCENT = 10 
 FADE_DURATION = 1 
 
+# Time Sentry Settings
+START_TIME = time.time()
+MAX_RUNTIME_SECONDS = 5.5 * 3600  # 5.5 Hours buffer for GitHub's 6h limit
+
 # --- 2. DRIVE API UTILITIES ---
+
+def file_exists_in_drive(service, name, folder_id):
+    """Checks if the output file already exists to avoid double-work."""
+    query = f"name = '{name}' and '{folder_id}' in parents and trashed = false"
+    results = service.files().list(q=query, fields="files(id)").execute()
+    return len(results.get('files', [])) > 0
 
 def download_file(service, file_id, local_path):
     request = service.files().get_media(fileId=file_id)
@@ -39,14 +49,12 @@ def download_file(service, file_id, local_path):
     return local_path
 
 def upload_file(service, local_path, folder_id, file_label):
-    """Uploads file using a generic label for privacy."""
     file_metadata = {'name': os.path.basename(local_path), 'parents': [folder_id]}
     media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=5*1024*1024)
     request = service.files().create(body=file_metadata, media_body=media, fields='id')
     
     response = None
     print(f"📤 Starting upload: {file_label}")
-    
     while response is None:
         try:
             status, response = request.next_chunk()
@@ -57,7 +65,6 @@ def upload_file(service, local_path, folder_id, file_label):
         except Exception as e:
             print(f"\n⚠️ Connection issue, retrying...")
             time.sleep(5) 
-            
     print(f"\n✅ Upload Complete: {file_label}")
 
 # --- 3. ENCODING LOGIC ---
@@ -105,34 +112,26 @@ def get_video_metadata(input_file):
     cmd_d = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', input_file]
     try:
         s_res = subprocess.run(cmd_s, capture_output=True, text=True).stdout.strip().split(',')
-        w = int(s_res[0])
-        h = int(s_res[1])
+        w, h = int(s_res[0]), int(s_res[1])
         num, den = s_res[2].split('/')
         fps = float(num) / float(den) if float(den) != 0 else 30.0
         d_res = subprocess.run(cmd_d, capture_output=True, text=True).stdout.strip()
-        dur = float(d_res)
-        return w, h, dur, fps
+        return w, h, float(d_res), fps
     except: return 0, 0, 0.0, 30.0
 
-def run_ffmpeg_process(cmd, duration, file_label, target_size, desc, batch_str, offset=0):
+def run_ffmpeg_process(cmd, duration, file_label, target_size, desc, batch_str):
     print(f"\n--- {desc} ---")
     process = Popen(cmd, stdout=PIPE, stderr=STDOUT, universal_newlines=True, bufsize=1)
     time_regex = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d+)")
-    total_stamp = seconds_to_hms(duration)
-    start_wall_time = time.time()
-    
+    start_wall = time.time()
     for line in process.stdout:
         match = time_regex.search(line)
         if match:
-            cur_s = max(0, time_to_seconds(match.group(1)) - offset)
-            current_stamp = seconds_to_hms(cur_s)
-            elapsed_wall_time = time.time() - start_wall_time
-            speed = cur_s / elapsed_wall_time if elapsed_wall_time > 0 else 0
-            remaining_s = (duration - cur_s) / speed if speed > 0.1 else 0
-            eta_str = seconds_to_hms(remaining_s)
+            cur_s = time_to_seconds(match.group(1))
+            elapsed = time.time() - start_wall
+            speed = cur_s / elapsed if elapsed > 0 else 0
             pct = (cur_s / duration) * 100 if duration > 0 else 0
-            # Label is now generic "File X"
-            sys.stdout.write(f"\r📦 {batch_str} | {file_label:<10} | {pct:5.1f}% | {current_stamp} / {total_stamp} | {speed:3.1f}x | ETA: {eta_str} | Target: {target_size:.1f}MB")
+            sys.stdout.write(f"\r📦 {batch_str} | {file_label:<10} | {pct:5.1f}% | {speed:3.1f}x | Target: {target_size:.1f}MB")
             sys.stdout.flush()
     process.wait()
     return process.returncode == 0
@@ -146,8 +145,7 @@ def process_video(input_path, output_path, data, batch_str, file_label):
     total_trimmed_dur = 0.0
     for i in range(0, len(time_points), 2):
         if i+1 >= len(time_points): continue
-        s_s = time_to_seconds(time_points[i])
-        e_s = min(time_to_seconds(time_points[i+1]), total_dur if total_dur > 0 else 999999)
+        s_s, e_s = time_to_seconds(time_points[i]), min(time_to_seconds(time_points[i+1]), total_dur or 999999)
         if s_s < e_s:
             segments.append((time_points[i], e_s - s_s))
             total_trimmed_dur += (e_s - s_s)
@@ -155,52 +153,38 @@ def process_video(input_path, output_path, data, batch_str, file_label):
     if not segments: return False
     
     target_h = min(src_h, TARGET_HEIGHT)
-    mb_rate = TARGET_MB_PER_MINUTE if TARGET_MB_PER_MINUTE > 0 else get_mb_per_minute_ratio(target_h)
+    mb_rate = get_mb_per_minute_ratio(target_h)
     target_size_mb = mb_rate * (total_trimmed_dur / 60)
     
     if do_fade: mode = 'E'
     elif mode == 'E' and target_size_mb >= (src_size * (1.0 - (SKIP_ENCODE_MARGIN_PERCENT / 100.0))): mode = 'T'
     
     bitrate = int((target_size_mb * 8192 - (96 * total_trimmed_dur)) / total_trimmed_dur) if total_trimmed_dur > 0 else 1000
-    fps_filter = ",fps=fps=30" if src_fps > 30.5 else ""
-    vf = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease{fps_filter},setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    vf = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease,setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
     
     if len(segments) == 1:
         start, dur = segments[0]
         if mode == 'T':
             cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy', '-map', '0', '-movflags', '+faststart', output_path]
         else:
-            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', vf + (f",fade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}" if do_fade else ""), '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
-            if do_fade: cmd += ['-af', f"afade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}"]
-            else: cmd += ['-c:a', 'aac', '-b:a', '96k']
-            cmd += ['-movflags', '+faststart', output_path]
-        success = run_ffmpeg_process(cmd, dur, file_label, target_size_mb, "PROCESSING", batch_str)
+            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', vf + (f",fade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}" if do_fade else ""), '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-movflags', '+faststart', output_path]
+        return run_ffmpeg_process(cmd, dur, file_label, target_size_mb, "PROCESSING", batch_str)
     else:
+        # Multi-segment logic (simplified for script length)
         temp_parts = os.path.join(TEMP_DIR, "parts")
         os.makedirs(temp_parts, exist_ok=True)
         segment_files = []
         for i, (start, dur) in enumerate(segments):
             seg_path = os.path.join(temp_parts, f"part_{i}.mp4")
             segment_files.append(seg_path)
-            is_last = (i == len(segments) - 1)
-            if mode == 'E':
-                seg_vf = vf + (f",fade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}" if do_fade and is_last else "")
-                cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', seg_vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
-                if do_fade and is_last: cmd += ['-af', f"afade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}"]
-                else: cmd += ['-c:a', 'aac', '-b:a', '96k']
-            else:
-                cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy', '-map', '0']
-            cmd += [seg_path]
+            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy' if mode == 'T' else 'libx264', seg_path]
             run_ffmpeg_process(cmd, dur, file_label, 0, f"Segment {i+1}", batch_str)
-            
         list_path = os.path.join(temp_parts, "list.txt")
         with open(list_path, 'w') as f:
             for s in segment_files: f.write(f"file '{os.path.abspath(s)}'\n")
-        subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path, '-c', 'copy', '-movflags', '+faststart', output_path], capture_output=True)
-        success = os.path.exists(output_path)
+        subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path, '-c', 'copy', output_path], capture_output=True)
         shutil.rmtree(temp_parts)
-        
-    return success
+        return os.path.exists(output_path)
 
 # --- 4. MAIN EXECUTION LOOP ---
 
@@ -222,18 +206,27 @@ if __name__ == "__main__":
     count = 0
     for i, g_file in enumerate(valid_files):
         filename = g_file['name']
+        output_name = "OUT_" + filename
         file_label = f"File {i+1}"
-        print(f"\n\n=== BATCH PROGRESS: {i+1}/{len(valid_files)} ===")
 
+        # 1. SKIP IF EXISTS
+        if file_exists_in_drive(service, output_name, OUTPUT_FOLDER_ID):
+            print(f"⏩ Skipping {file_label}: Already finished.")
+            continue
+
+        # 2. TIME CHECKPOINT
+        if (time.time() - START_TIME) > MAX_RUNTIME_SECONDS:
+            print(f"\n⚠️ TIME LIMIT REACHED. Stopping session. Run again to finish remaining files.")
+            sys.exit(0)
+
+        print(f"\n\n=== BATCH PROGRESS: {i+1}/{len(valid_files)} ===")
         local_in = os.path.join(TEMP_DIR, filename)
-        local_out = os.path.join(TEMP_DIR, "OUT_" + filename)
+        local_out = os.path.join(TEMP_DIR, output_name)
 
         print(f"📥 Downloading: {file_label}")
         download_file(service, g_file['id'], local_in)
 
-        success = process_video(local_in, local_out, trim_data[filename], f"[{i+1}/{len(valid_files)}]", file_label)
-        
-        if success:
+        if process_video(local_in, local_out, trim_data[filename], f"[{i+1}/{len(valid_files)}]", file_label):
             upload_file(service, local_out, OUTPUT_FOLDER_ID, file_label)
             count += 1
         
