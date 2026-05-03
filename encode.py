@@ -41,12 +41,21 @@ def download_file(service, file_id, local_path):
     return local_path
 
 def upload_file(service, local_path, folder_id):
-    """Uploads file using resumable chunks with a single-line progress HUD."""
-    file_metadata = {'name': os.path.basename(local_path), 'parents': [folder_id]}
+    """Uploads file with fixed storage quota logic."""
+    file_metadata = {
+        'name': os.path.basename(local_path), 
+        'parents': [folder_id]
+    }
     
-    # 10MB chunks for network stability
     media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=10*1024*1024)
-    request = service.files().create(body=file_metadata, media_body=media, fields='id')
+    
+    # We add supportsAllDrives=True to ensure it uses the shared folder's logic
+    request = service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields='id',
+        supportsAllDrives=True  # This is the crucial addition
+    )
     
     response = None
     fname = os.path.basename(local_path)
@@ -60,6 +69,11 @@ def upload_file(service, local_path, folder_id):
                 sys.stdout.write(f"\r📤 Upload Progress: [{percent}%] ")
                 sys.stdout.flush()
         except Exception as e:
+            # If we still see "storageQuotaExceeded", we need a different strategy
+            if "storageQuotaExceeded" in str(e):
+                print(f"\n❌ ERROR: Google is blocking the bot's storage.")
+                print("FIX: Go to your Drive folder > Right-click > Share > Make sure the bot is an EDITOR.")
+                sys.exit(1)
             print(f"\n⚠️ Connection lost, retrying... ({e})")
             time.sleep(5) 
             
