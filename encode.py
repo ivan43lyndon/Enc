@@ -11,21 +11,11 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
-# --- 1. CLOUD-READY AUTHENTICATION ---
-# This replaces drive.mount for background automation
-if os.environ.get('DRIVE_JSON'):
-    info = json.loads(os.environ.get('DRIVE_JSON'))
-    creds = service_account.Credentials.from_service_account_info(info)
-    drive_service = build('drive', 'v3', credentials=creds)
-else:
-    print("❌ ERROR: DRIVE_JSON secret not found in environment variables.")
-    sys.exit(1)
-
-# --- 2. CONFIGURATION (UPDATE THESE IDs) ---
-# Get these IDs from your Google Drive folder URLs
-INPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd' 
-OUTPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
-TRIM_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
+# --- 1. CONFIGURATION ---
+# Replace these with your actual IDs from Google Drive
+INPUT_FOLDER_ID = 'YOUR_INPUT_FOLDER_ID' 
+OUTPUT_FOLDER_ID = 'YOUR_OUTPUT_FOLDER_ID'
+TRIM_FILE_ID = 'YOUR_1_TXT_FILE_ID'
 
 TEMP_DIR = './Encoding_Cache'
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -38,9 +28,11 @@ TARGET_MB_PER_MINUTE = 0
 SKIP_ENCODE_MARGIN_PERCENT = 10 
 FADE_DURATION = 1 
 
-# --- 3. GOOGLE DRIVE API WRAPPERS ---
-def download_file(file_id, local_path):
-    request = drive_service.files().get_media(fileId=file_id)
+# --- 2. DRIVE API UTILITIES ---
+
+def download_file(service, file_id, local_path):
+    """Downloads a file from Drive to the local runner."""
+    request = service.files().get_media(fileId=file_id)
     fh = io.FileIO(local_path, 'wb')
     downloader = MediaIoBaseDownload(fh, request)
     done = False
@@ -48,12 +40,33 @@ def download_file(file_id, local_path):
         status, done = downloader.next_chunk()
     return local_path
 
-def upload_file(local_path, folder_id):
+def upload_file(service, local_path, folder_id):
+    """Uploads file using resumable chunks with a single-line progress HUD."""
     file_metadata = {'name': os.path.basename(local_path), 'parents': [folder_id]}
-    media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
-    drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+    
+    # 10MB chunks for network stability
+    media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=10*1024*1024)
+    request = service.files().create(body=file_metadata, media_body=media, fields='id')
+    
+    response = None
+    fname = os.path.basename(local_path)
+    print(f"📤 Starting upload: {fname}")
+    
+    while response is None:
+        try:
+            status, response = request.next_chunk()
+            if status:
+                percent = int(status.progress() * 100)
+                sys.stdout.write(f"\r📤 Upload Progress: [{percent}%] ")
+                sys.stdout.flush()
+        except Exception as e:
+            print(f"\n⚠️ Connection lost, retrying... ({e})")
+            time.sleep(5) 
+            
+    print(f"\n✅ Upload Complete: {fname}")
 
-# --- 4. YOUR ORIGINAL LOGIC (UNCHANGED) ---
+# --- 3. ORIGINAL ENCODING LOGIC ---
+
 def get_mb_per_minute_ratio(height):
     if height >= 1080: return 12.0
     if height >= 720: return 8.0
@@ -87,12 +100,8 @@ def parse_trim_file(local_path):
             if len(parts) >= 3:
                 filename = parts[0]
                 mode = parts[1].upper()
-                fade = False
-                if parts[-1].upper() == 'F':
-                    fade = True
-                    times = parts[2:-1]
-                else:
-                    times = parts[2:]
+                fade = parts[-1].upper() == 'F'
+                times = parts[2:-1] if fade else parts[2:]
                 trim_data[filename] = {'mode': mode, 'times': times, 'fade': fade}
     return trim_data
 
@@ -101,12 +110,12 @@ def get_video_metadata(input_file):
     cmd_d = ['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', input_file]
     try:
         s_res = subprocess.run(cmd_s, capture_output=True, text=True).stdout.strip().split(',')
-        w = int(s_res[0]) if s_res[0] else 0
-        h = int(s_res[1]) if s_res[1] else 0
+        w = int(s_res[0])
+        h = int(s_res[1])
         num, den = s_res[2].split('/')
         fps = float(num) / float(den) if float(den) != 0 else 30.0
         d_res = subprocess.run(cmd_d, capture_output=True, text=True).stdout.strip()
-        dur = float(d_res) if d_res else 0.0
+        dur = float(d_res)
         return w, h, dur, fps
     except: return 0, 0, 0.0, 30.0
 
@@ -116,6 +125,7 @@ def run_ffmpeg_process(cmd, duration, filename, target_size, desc, batch_str, of
     time_regex = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d+)")
     total_stamp = seconds_to_hms(duration)
     start_wall_time = time.time()
+    
     for line in process.stdout:
         match = time_regex.search(line)
         if match:
@@ -133,87 +143,92 @@ def run_ffmpeg_process(cmd, duration, filename, target_size, desc, batch_str, of
 
 def process_video(input_path, output_path, data, batch_str):
     fname = os.path.basename(input_path)
-    mode = data['mode']
-    time_points = data['times']
-    do_fade = data['fade']
+    mode, time_points, do_fade = data['mode'], data['times'], data['fade']
     src_w, src_h, total_dur, src_fps = get_video_metadata(input_path)
     src_size = os.path.getsize(input_path) / (1024*1024)
+    
     segments = []
     total_trimmed_dur = 0.0
     for i in range(0, len(time_points), 2):
         if i+1 >= len(time_points): continue
         s_s = time_to_seconds(time_points[i])
-        limit = total_dur if total_dur > 0 else 999999
-        e_s = min(time_to_seconds(time_points[i+1]), limit)
+        e_s = min(time_to_seconds(time_points[i+1]), total_dur if total_dur > 0 else 999999)
         if s_s < e_s:
             segments.append((time_points[i], e_s - s_s))
             total_trimmed_dur += (e_s - s_s)
+            
     if not segments: return f"❌ No segments for {fname}", False
+    
     target_h = min(src_h, TARGET_HEIGHT)
     mb_rate = TARGET_MB_PER_MINUTE if TARGET_MB_PER_MINUTE > 0 else get_mb_per_minute_ratio(target_h)
     target_size_mb = mb_rate * (total_trimmed_dur / 60)
+    
     if do_fade: mode = 'E'
-    elif mode == 'E' and target_size_mb >= (src_size * (1.0 - (SKIP_ENCODE_MARGIN_PERCENT / 100.0))):
-        mode = 'T'
+    elif mode == 'E' and target_size_mb >= (src_size * (1.0 - (SKIP_ENCODE_MARGIN_PERCENT / 100.0))): mode = 'T'
+    
     bitrate = int((target_size_mb * 8192 - (96 * total_trimmed_dur)) / total_trimmed_dur) if total_trimmed_dur > 0 else 1000
     fps_filter = ",fps=fps=30" if src_fps > 30.5 else ""
     vf = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease{fps_filter},setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
-    if do_fade:
-        vf += f",fade=t=out:st={total_trimmed_dur - FADE_DURATION}:d={FADE_DURATION}"
-        af = f"afade=t=out:st={total_trimmed_dur - FADE_DURATION}:d={FADE_DURATION}"
-
+    
     if len(segments) == 1:
         start, dur = segments[0]
         if mode == 'T':
             cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy', '-map', '0', '-movflags', '+faststart', output_path]
         else:
-            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
-            if do_fade: cmd += ['-af', af]
+            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', vf + (f",fade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}" if do_fade else ""), '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
+            if do_fade: cmd += ['-af', f"afade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}"]
             else: cmd += ['-c:a', 'aac', '-b:a', '96k']
             cmd += ['-movflags', '+faststart', output_path]
         success = run_ffmpeg_process(cmd, dur, fname, target_size_mb, "PROCESSING", batch_str)
     else:
-        temp_work_dir = os.path.join(TEMP_DIR, "parts")
-        os.makedirs(temp_work_dir, exist_ok=True)
+        temp_parts = os.path.join(TEMP_DIR, "parts")
+        os.makedirs(temp_parts, exist_ok=True)
         segment_files = []
         for i, (start, dur) in enumerate(segments):
-            seg_path = os.path.join(temp_work_dir, f"part_{i}.mp4")
+            seg_path = os.path.join(temp_parts, f"part_{i}.mp4")
             segment_files.append(seg_path)
             is_last = (i == len(segments) - 1)
             if mode == 'E':
-                current_vf = vf
-                if do_fade and is_last:
-                    current_vf += f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
-                cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', current_vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
-                if do_fade and is_last: cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+                seg_vf = vf + (f",fade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}" if do_fade and is_last else "")
+                cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', seg_vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
+                if do_fade and is_last: cmd += ['-af', f"afade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}"]
                 else: cmd += ['-c:a', 'aac', '-b:a', '96k']
             else:
                 cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy', '-map', '0']
             cmd += [seg_path]
             run_ffmpeg_process(cmd, dur, fname, 0, f"Segment {i+1}", batch_str)
-        list_path = os.path.join(temp_work_dir, "list.txt")
+            
+        list_path = os.path.join(temp_parts, "list.txt")
         with open(list_path, 'w') as f:
             for s in segment_files: f.write(f"file '{os.path.abspath(s)}'\n")
-        concat_cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path, '-c', 'copy', '-movflags', '+faststart', output_path]
-        subprocess.run(concat_cmd, capture_output=True)
+        subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path, '-c', 'copy', '-movflags', '+faststart', output_path], capture_output=True)
         success = os.path.exists(output_path)
-        shutil.rmtree(temp_work_dir)
+        shutil.rmtree(temp_parts)
+        
     return f"✅ SUCCESS [{mode}]: {fname}", success
 
-# --- 5. MAIN LOOP (MODIFIED FOR DRIVE API) ---
+# --- 4. MAIN EXECUTION LOOP ---
+
 if __name__ == "__main__":
-    # Download Trim File
+    if not os.environ.get('DRIVE_JSON'):
+        print("❌ ERROR: DRIVE_JSON secret not found."); sys.exit(1)
+    
+    creds = service_account.Credentials.from_service_account_info(json.loads(os.environ.get('DRIVE_JSON')))
+    
+    # 1. Initial Setup
+    init_service = build('drive', 'v3', credentials=creds)
     local_trim = os.path.join(TEMP_DIR, "trim_config.txt")
-    download_file(TRIM_FILE_ID, local_trim)
+    download_file(init_service, TRIM_FILE_ID, local_trim)
     trim_data = parse_trim_file(local_trim)
 
-    # List files in input folder
-    results = drive_service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false", fields="files(id, name)").execute()
-    all_files = results.get('files', [])
-    valid_files = [f for f in all_files if f['name'] in trim_data]
+    results = init_service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false", fields="files(id, name)").execute()
+    valid_files = [f for f in results.get('files', []) if f['name'] in trim_data]
     
     batch_history = []
     for i, g_file in enumerate(valid_files):
+        # REFRESH CONNECTION for every file to prevent Broken Pipe
+        current_service = build('drive', 'v3', credentials=creds)
+        
         filename = g_file['name']
         print(f"\n\n=== BATCH HISTORY ===")
         for hist in batch_history: print(hist)
@@ -222,16 +237,15 @@ if __name__ == "__main__":
         local_out = os.path.join(TEMP_DIR, "OUT_" + filename)
 
         print(f"\n📥 Downloading: {filename}")
-        download_file(g_file['id'], local_in)
+        download_file(current_service, g_file['id'], local_in)
 
         msg, success = process_video(local_in, local_out, trim_data[filename], f"[{i+1}/{len(valid_files)}]")
         
         if success:
-            print(f"\n📤 Uploading: {filename}")
-            upload_file(local_out, OUTPUT_FOLDER_ID)
+            upload_file(current_service, local_out, OUTPUT_FOLDER_ID)
             batch_history.append(msg)
         
-        # CLEANUP: Crucial to keep GitHub's 14GB disk from filling up
+        # CLEANUP: Crucial for 14GB GitHub Disk limit
         if os.path.exists(local_in): os.remove(local_in)
         if os.path.exists(local_out): os.remove(local_out)
 
