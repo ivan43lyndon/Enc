@@ -30,7 +30,6 @@ FADE_DURATION = 1
 # --- 2. DRIVE API UTILITIES ---
 
 def download_file(service, file_id, local_path):
-    """Downloads a file from Drive."""
     request = service.files().get_media(fileId=file_id)
     fh = io.FileIO(local_path, 'wb')
     downloader = MediaIoBaseDownload(fh, request)
@@ -39,33 +38,29 @@ def download_file(service, file_id, local_path):
         status, done = downloader.next_chunk()
     return local_path
 
-def upload_file(service, local_path, folder_id):
-    """Uploads file using your user quota with a one-line progress HUD."""
+def upload_file(service, local_path, folder_id, file_label):
+    """Uploads file using a generic label for privacy."""
     file_metadata = {'name': os.path.basename(local_path), 'parents': [folder_id]}
-    
-    # 5MB chunks for better stability on GitHub Actions network
     media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=5*1024*1024)
     request = service.files().create(body=file_metadata, media_body=media, fields='id')
     
     response = None
-    fname = os.path.basename(local_path)
-    print(f"📤 Starting upload: {fname}")
+    print(f"📤 Starting upload: {file_label}")
     
     while response is None:
         try:
             status, response = request.next_chunk()
             if status:
                 percent = int(status.progress() * 100)
-                # This \r trick keeps it on one line
                 sys.stdout.write(f"\r📤 Upload Progress: [{percent}%] ")
                 sys.stdout.flush()
         except Exception as e:
-            print(f"\n⚠️ Connection issue, retrying... ({e})")
+            print(f"\n⚠️ Connection issue, retrying...")
             time.sleep(5) 
             
-    print(f"\n✅ Upload Complete: {fname}")
+    print(f"\n✅ Upload Complete: {file_label}")
 
-# --- 3. ENCODING LOGIC (STAYS THE SAME) ---
+# --- 3. ENCODING LOGIC ---
 
 def get_mb_per_minute_ratio(height):
     if height >= 1080: return 12.0
@@ -119,7 +114,7 @@ def get_video_metadata(input_file):
         return w, h, dur, fps
     except: return 0, 0, 0.0, 30.0
 
-def run_ffmpeg_process(cmd, duration, filename, target_size, desc, batch_str, offset=0):
+def run_ffmpeg_process(cmd, duration, file_label, target_size, desc, batch_str, offset=0):
     print(f"\n--- {desc} ---")
     process = Popen(cmd, stdout=PIPE, stderr=STDOUT, universal_newlines=True, bufsize=1)
     time_regex = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d+)")
@@ -136,13 +131,13 @@ def run_ffmpeg_process(cmd, duration, filename, target_size, desc, batch_str, of
             remaining_s = (duration - cur_s) / speed if speed > 0.1 else 0
             eta_str = seconds_to_hms(remaining_s)
             pct = (cur_s / duration) * 100 if duration > 0 else 0
-            sys.stdout.write(f"\r📦 {batch_str} | {filename[:15]:<15} | {pct:5.1f}% | {current_stamp} / {total_stamp} | {speed:3.1f}x | ETA: {eta_str} | Target: {target_size:.1f}MB")
+            # Label is now generic "File X"
+            sys.stdout.write(f"\r📦 {batch_str} | {file_label:<10} | {pct:5.1f}% | {current_stamp} / {total_stamp} | {speed:3.1f}x | ETA: {eta_str} | Target: {target_size:.1f}MB")
             sys.stdout.flush()
     process.wait()
     return process.returncode == 0
 
-def process_video(input_path, output_path, data, batch_str):
-    fname = os.path.basename(input_path)
+def process_video(input_path, output_path, data, batch_str, file_label):
     mode, time_points, do_fade = data['mode'], data['times'], data['fade']
     src_w, src_h, total_dur, src_fps = get_video_metadata(input_path)
     src_size = os.path.getsize(input_path) / (1024*1024)
@@ -157,7 +152,7 @@ def process_video(input_path, output_path, data, batch_str):
             segments.append((time_points[i], e_s - s_s))
             total_trimmed_dur += (e_s - s_s)
             
-    if not segments: return f"❌ No segments for {fname}", False
+    if not segments: return False
     
     target_h = min(src_h, TARGET_HEIGHT)
     mb_rate = TARGET_MB_PER_MINUTE if TARGET_MB_PER_MINUTE > 0 else get_mb_per_minute_ratio(target_h)
@@ -179,7 +174,7 @@ def process_video(input_path, output_path, data, batch_str):
             if do_fade: cmd += ['-af', f"afade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}"]
             else: cmd += ['-c:a', 'aac', '-b:a', '96k']
             cmd += ['-movflags', '+faststart', output_path]
-        success = run_ffmpeg_process(cmd, dur, fname, target_size_mb, "PROCESSING", batch_str)
+        success = run_ffmpeg_process(cmd, dur, file_label, target_size_mb, "PROCESSING", batch_str)
     else:
         temp_parts = os.path.join(TEMP_DIR, "parts")
         os.makedirs(temp_parts, exist_ok=True)
@@ -196,7 +191,7 @@ def process_video(input_path, output_path, data, batch_str):
             else:
                 cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy', '-map', '0']
             cmd += [seg_path]
-            run_ffmpeg_process(cmd, dur, fname, 0, f"Segment {i+1}", batch_str)
+            run_ffmpeg_process(cmd, dur, file_label, 0, f"Segment {i+1}", batch_str)
             
         list_path = os.path.join(temp_parts, "list.txt")
         with open(list_path, 'w') as f:
@@ -205,51 +200,44 @@ def process_video(input_path, output_path, data, batch_str):
         success = os.path.exists(output_path)
         shutil.rmtree(temp_parts)
         
-    return f"✅ SUCCESS [{mode}]: {fname}", success
+    return success
 
 # --- 4. MAIN EXECUTION LOOP ---
 
 if __name__ == "__main__":
-    # Check for DRIVE_TOKEN (User Auth) instead of DRIVE_JSON (Service Account)
     if not os.environ.get('DRIVE_TOKEN'):
-        print("❌ ERROR: DRIVE_TOKEN secret not found in GitHub Repo Secrets."); sys.exit(1)
+        print("❌ ERROR: DRIVE_TOKEN secret missing."); sys.exit(1)
     
-    # Authenticate as USER
     creds_info = json.loads(os.environ.get('DRIVE_TOKEN'))
     creds = Credentials.from_authorized_user_info(creds_info)
-    
-    # Build Service
     service = build('drive', 'v3', credentials=creds)
     
-    # 1. Download trim config
     local_trim = os.path.join(TEMP_DIR, "trim_config.txt")
     download_file(service, TRIM_FILE_ID, local_trim)
     trim_data = parse_trim_file(local_trim)
 
-    # 2. Get files to process
     results = service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false", fields="files(id, name)").execute()
     valid_files = [f for f in results.get('files', []) if f['name'] in trim_data]
     
-    batch_history = []
+    count = 0
     for i, g_file in enumerate(valid_files):
         filename = g_file['name']
+        file_label = f"File {i+1}"
         print(f"\n\n=== BATCH PROGRESS: {i+1}/{len(valid_files)} ===")
 
         local_in = os.path.join(TEMP_DIR, filename)
         local_out = os.path.join(TEMP_DIR, "OUT_" + filename)
 
-        print(f"📥 Downloading: {filename}")
+        print(f"📥 Downloading: {file_label}")
         download_file(service, g_file['id'], local_in)
 
-        msg, success = process_video(local_in, local_out, trim_data[filename], f"[{i+1}/{len(valid_files)}]")
+        success = process_video(local_in, local_out, trim_data[filename], f"[{i+1}/{len(valid_files)}]", file_label)
         
         if success:
-            upload_file(service, local_out, OUTPUT_FOLDER_ID)
-            batch_history.append(msg)
+            upload_file(service, local_out, OUTPUT_FOLDER_ID, file_label)
+            count += 1
         
-        # Cleanup local space immediately
         if os.path.exists(local_in): os.remove(local_in)
         if os.path.exists(local_out): os.remove(local_out)
 
-    print("\n\nFINAL BATCH REPORT")
-    for res in batch_history: print(res)
+    print(f"\n\nFINAL BATCH REPORT: Successfully processed {count} files.")
