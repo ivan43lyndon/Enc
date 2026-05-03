@@ -1,32 +1,45 @@
-name: Video Encoding Robot
+name: Video Encoding Pipeline
+
 on:
-  workflow_dispatch:      # This creates the "Run" button in the GitHub UI
+  workflow_dispatch: # Allows you to start it manually from the Actions tab
 
 jobs:
-  build:
+  encode-and-upload:
     runs-on: ubuntu-latest
-    # This gives the job 6 hours to finish
+    # This gives the job a 6-hour timeout to be safe
     timeout-minutes: 360 
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v3
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.9'
 
-      - name: Install System Tools
+      - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install Python Libraries
+      - name: Install Python Dependencies
         run: |
           pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
-      - name: Run Encoding
+      - name: First Pass (Run 1)
         env:
-          # This line maps the GitHub Secret to the Python Environment Variable
           DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
         run: python encode.py
+
+      - name: Second Pass (Run 2 - Resumes if Run 1 timed out)
+        # This step runs even if the first pass reached its internal time limit
+        if: always() 
+        env:
+          DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
+        run: python encode.py
+
+      - name: Cleanup Workspace
+        if: always()
+        run: |
+          rm -rf Encoding_Cache
