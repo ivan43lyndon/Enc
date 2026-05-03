@@ -7,12 +7,11 @@ import shutil
 import re
 import time
 from subprocess import Popen, PIPE, STDOUT
-from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 # --- 1. CONFIGURATION ---
-# Replace these with your actual IDs from Google Drive
 INPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd' 
 OUTPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
 TRIM_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
@@ -31,7 +30,7 @@ FADE_DURATION = 1
 # --- 2. DRIVE API UTILITIES ---
 
 def download_file(service, file_id, local_path):
-    """Downloads a file from Drive to the local runner."""
+    """Downloads a file from Drive."""
     request = service.files().get_media(fileId=file_id)
     fh = io.FileIO(local_path, 'wb')
     downloader = MediaIoBaseDownload(fh, request)
@@ -41,23 +40,12 @@ def download_file(service, file_id, local_path):
     return local_path
 
 def upload_file(service, local_path, folder_id):
-    """Uploads file and attempts to transfer ownership to avoid quota issues."""
-    YOUR_MAIN_EMAIL = "ivan43lyndon4@gmail.com" # <--- CHANGE THIS TO YOUR REAL EMAIL
+    """Uploads file using your user quota with a one-line progress HUD."""
+    file_metadata = {'name': os.path.basename(local_path), 'parents': [folder_id]}
     
-    file_metadata = {
-        'name': os.path.basename(local_path), 
-        'parents': [folder_id]
-    }
-    
-    media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=10*1024*1024)
-    
-    # 1. Create the file
-    request = service.files().create(
-        body=file_metadata, 
-        media_body=media, 
-        fields='id',
-        supportsAllDrives=True
-    )
+    # 5MB chunks for better stability on GitHub Actions network
+    media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=5*1024*1024)
+    request = service.files().create(body=file_metadata, media_body=media, fields='id')
     
     response = None
     fname = os.path.basename(local_path)
@@ -68,34 +56,16 @@ def upload_file(service, local_path, folder_id):
             status, response = request.next_chunk()
             if status:
                 percent = int(status.progress() * 100)
+                # This \r trick keeps it on one line
                 sys.stdout.write(f"\r📤 Upload Progress: [{percent}%] ")
                 sys.stdout.flush()
         except Exception as e:
-            print(f"\n⚠️ Connection lost, retrying... ({e})")
-            time.sleep(5)
+            print(f"\n⚠️ Connection issue, retrying... ({e})")
+            time.sleep(5) 
             
-    file_id = response.get('id')
-    print(f"\n✅ Uploaded. Transferring ownership to {YOUR_MAIN_EMAIL}...")
+    print(f"\n✅ Upload Complete: {fname}")
 
-    # 2. Transfer Ownership to YOU so it uses YOUR storage
-    try:
-        permission = {
-            'type': 'user',
-            'role': 'owner',
-            'emailAddress': YOUR_MAIN_EMAIL
-        }
-        service.permissions().create(
-            fileId=file_id,
-            body=permission,
-            transferOwnership=True,
-            supportsAllDrives=True
-        ).execute()
-        print("👑 Ownership transferred successfully!")
-    except Exception as e:
-        print(f"⚠️ Could not transfer ownership: {e}")
-        print("Note: If this is a personal (non-business) Gmail, transfer might be restricted.")
-
-# --- 3. ORIGINAL ENCODING LOGIC ---
+# --- 3. ENCODING LOGIC (STAYS THE SAME) ---
 
 def get_mb_per_minute_ratio(height):
     if height >= 1080: return 12.0
@@ -240,44 +210,46 @@ def process_video(input_path, output_path, data, batch_str):
 # --- 4. MAIN EXECUTION LOOP ---
 
 if __name__ == "__main__":
-    if not os.environ.get('DRIVE_JSON'):
-        print("❌ ERROR: DRIVE_JSON secret not found."); sys.exit(1)
+    # Check for DRIVE_TOKEN (User Auth) instead of DRIVE_JSON (Service Account)
+    if not os.environ.get('DRIVE_TOKEN'):
+        print("❌ ERROR: DRIVE_TOKEN secret not found in GitHub Repo Secrets."); sys.exit(1)
     
-    creds = service_account.Credentials.from_service_account_info(json.loads(os.environ.get('DRIVE_JSON')))
+    # Authenticate as USER
+    creds_info = json.loads(os.environ.get('DRIVE_TOKEN'))
+    creds = Credentials.from_authorized_user_info(creds_info)
     
-    # 1. Initial Setup
-    init_service = build('drive', 'v3', credentials=creds)
+    # Build Service
+    service = build('drive', 'v3', credentials=creds)
+    
+    # 1. Download trim config
     local_trim = os.path.join(TEMP_DIR, "trim_config.txt")
-    download_file(init_service, TRIM_FILE_ID, local_trim)
+    download_file(service, TRIM_FILE_ID, local_trim)
     trim_data = parse_trim_file(local_trim)
 
-    results = init_service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false", fields="files(id, name)").execute()
+    # 2. Get files to process
+    results = service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false", fields="files(id, name)").execute()
     valid_files = [f for f in results.get('files', []) if f['name'] in trim_data]
     
     batch_history = []
     for i, g_file in enumerate(valid_files):
-        # REFRESH CONNECTION for every file to prevent Broken Pipe
-        current_service = build('drive', 'v3', credentials=creds)
-        
         filename = g_file['name']
-        print(f"\n\n=== BATCH HISTORY ===")
-        for hist in batch_history: print(hist)
+        print(f"\n\n=== BATCH PROGRESS: {i+1}/{len(valid_files)} ===")
 
         local_in = os.path.join(TEMP_DIR, filename)
         local_out = os.path.join(TEMP_DIR, "OUT_" + filename)
 
-        print(f"\n📥 Downloading: {filename}")
-        download_file(current_service, g_file['id'], local_in)
+        print(f"📥 Downloading: {filename}")
+        download_file(service, g_file['id'], local_in)
 
         msg, success = process_video(local_in, local_out, trim_data[filename], f"[{i+1}/{len(valid_files)}]")
         
         if success:
-            upload_file(current_service, local_out, OUTPUT_FOLDER_ID)
+            upload_file(service, local_out, OUTPUT_FOLDER_ID)
             batch_history.append(msg)
         
-        # CLEANUP: Crucial for 14GB GitHub Disk limit
+        # Cleanup local space immediately
         if os.path.exists(local_in): os.remove(local_in)
         if os.path.exists(local_out): os.remove(local_out)
 
-    print("\nFINAL BATCH REPORT")
+    print("\n\nFINAL BATCH REPORT")
     for res in batch_history: print(res)
