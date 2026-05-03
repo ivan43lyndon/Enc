@@ -137,6 +137,7 @@ def run_ffmpeg_process(cmd, duration, file_label, target_size, desc, batch_str):
     return process.returncode == 0
 
 def process_video(input_path, output_path, data, batch_str, file_label):
+    fname = os.path.basename(input_path)
     mode, time_points, do_fade = data['mode'], data['times'], data['fade']
     src_w, src_h, total_dur, src_fps = get_video_metadata(input_path)
     src_size = os.path.getsize(input_path) / (1024*1024)
@@ -145,7 +146,8 @@ def process_video(input_path, output_path, data, batch_str, file_label):
     total_trimmed_dur = 0.0
     for i in range(0, len(time_points), 2):
         if i+1 >= len(time_points): continue
-        s_s, e_s = time_to_seconds(time_points[i]), min(time_to_seconds(time_points[i+1]), total_dur or 999999)
+        s_s = time_to_seconds(time_points[i])
+        e_s = min(time_to_seconds(time_points[i+1]), total_dur if total_dur > 0 else 999999)
         if s_s < e_s:
             segments.append((time_points[i], e_s - s_s))
             total_trimmed_dur += (e_s - s_s)
@@ -160,30 +162,61 @@ def process_video(input_path, output_path, data, batch_str, file_label):
     elif mode == 'E' and target_size_mb >= (src_size * (1.0 - (SKIP_ENCODE_MARGIN_PERCENT / 100.0))): mode = 'T'
     
     bitrate = int((target_size_mb * 8192 - (96 * total_trimmed_dur)) / total_trimmed_dur) if total_trimmed_dur > 0 else 1000
-    vf = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease,setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    fps_filter = ",fps=fps=30" if src_fps > 30.5 else ""
+    vf = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease{fps_filter},setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
     
     if len(segments) == 1:
         start, dur = segments[0]
         if mode == 'T':
             cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy', '-map', '0', '-movflags', '+faststart', output_path]
         else:
-            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', vf + (f",fade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}" if do_fade else ""), '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-movflags', '+faststart', output_path]
+            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-vf', vf + (f",fade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}" if do_fade else ""), '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
+            if do_fade: cmd += ['-af', f"afade=t=out:st={dur-FADE_DURATION}:d={FADE_DURATION}"]
+            else: cmd += ['-c:a', 'aac', '-b:a', '96k']
+            cmd += ['-movflags', '+faststart', output_path]
         return run_ffmpeg_process(cmd, dur, file_label, target_size_mb, "PROCESSING", batch_str)
+    
     else:
-        # Multi-segment logic (simplified for script length)
-        temp_parts = os.path.join(TEMP_DIR, "parts")
-        os.makedirs(temp_parts, exist_ok=True)
+        # --- YOUR MULTI-SEGMENT LOGIC ---
+        temp_work_dir = os.path.join(TEMP_DIR, "parts")
+        os.makedirs(temp_work_dir, exist_ok=True)
         segment_files = []
+        
         for i, (start, dur) in enumerate(segments):
-            seg_path = os.path.join(temp_parts, f"part_{i}.mp4")
+            seg_path = os.path.join(temp_work_dir, f"part_{i}.mp4")
             segment_files.append(seg_path)
-            cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy' if mode == 'T' else 'libx264', seg_path]
+            is_last = (i == len(segments) - 1)
+            
+            if mode == 'E':
+                current_vf = vf
+                if do_fade and is_last:
+                    current_vf += f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
+                
+                cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), 
+                       '-vf', current_vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), 
+                       '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k"]
+                
+                if do_fade and is_last:
+                    cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+                else:
+                    cmd += ['-c:a', 'aac', '-b:a', '96k']
+            else:
+                cmd = ['ffmpeg', '-y', '-ss', start, '-i', input_path, '-t', str(dur), '-c', 'copy', '-map', '0']
+
+            cmd += [seg_path]
+            # Use 0 for target size here so it doesn't clutter the progress bar
             run_ffmpeg_process(cmd, dur, file_label, 0, f"Segment {i+1}", batch_str)
-        list_path = os.path.join(temp_parts, "list.txt")
+
+        # Concat the processed segments
+        list_path = os.path.join(temp_work_dir, "list.txt")
         with open(list_path, 'w') as f:
             for s in segment_files: f.write(f"file '{os.path.abspath(s)}'\n")
-        subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path, '-c', 'copy', output_path], capture_output=True)
-        shutil.rmtree(temp_parts)
+            
+        concat_cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', list_path, '-c', 'copy', '-movflags', '+faststart', output_path]
+        subprocess.run(concat_cmd, capture_output=True)
+        
+        # Cleanup temp parts
+        shutil.rmtree(temp_work_dir)
         return os.path.exists(output_path)
 
 # --- 4. MAIN EXECUTION LOOP ---
