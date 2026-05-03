@@ -13,9 +13,9 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 
 # --- 1. CONFIGURATION ---
 # Replace these with your actual IDs from Google Drive
-INPUT_FOLDER_ID = 'YOUR_INPUT_FOLDER_ID' 
-OUTPUT_FOLDER_ID = 'YOUR_OUTPUT_FOLDER_ID'
-TRIM_FILE_ID = 'YOUR_1_TXT_FILE_ID'
+INPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd' 
+OUTPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
+TRIM_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
 
 TEMP_DIR = './Encoding_Cache'
 os.makedirs(TEMP_DIR, exist_ok=True)
