@@ -27,5 +27,6 @@ jobs:
 
       - name: Run Encoding
         env:
-          DRIVE_JSON: ${{ secrets.DRIVE_JSON }}
+          # This line maps the GitHub Secret to the Python Environment Variable
+          DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
         run: python encode.py
