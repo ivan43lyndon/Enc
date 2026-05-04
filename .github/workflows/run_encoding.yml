@@ -25,11 +25,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
+          pip install playwright beautifulsoup4 cloudscraper
+          playwright install chromium
+          playwright install-deps chromium
 
       - name: Install Python Dependencies
         run: |
           pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
-
+          
       - name: Run Encoder
         id: encoder_step
         env:
