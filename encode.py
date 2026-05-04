@@ -40,7 +40,7 @@ def get_drive_service():
 
 def file_exists_in_drive(service, name, folder_id):
     query = f"name = '{name}' and '{folder_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id)", stderr=subprocess.DEVNULL).execute()
+    results = service.files().list(q=query, fields="files(id)").execute()
     return len(results.get('files', [])) > 0
 
 # --- YOUR ORIGINAL LOGIC (PORTED TO API) ---
