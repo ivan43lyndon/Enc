@@ -172,12 +172,17 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
                 original_name = scraped_title
 
         # Now download the raw file from the web to GitHub SSD
+        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
         print(f"📥 Downloading Web Stream to SSD...", flush=True)
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error',
-            '-headers', f"Referer: {input_arg}\r\n",
+            '-headers', f"Referer: {file_id}\r\nUser-Agent: {UA}\r\n", # Added UA here
             '-i', input_source,
-            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', temp_in
+            '-c', 'copy', 
+            '-bsf:a', 'aac_adtstoasc', 
+            '-movflags', 'faststart', # Helps with stream stability
+            temp_in
         ]
         subprocess.run(raw_download_cmd)
     else:
