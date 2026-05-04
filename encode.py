@@ -278,26 +278,29 @@ if __name__ == "__main__":
     fh = io.BytesIO()
     MediaIoBaseDownload(fh, service.files().get_media(fileId=CONFIG_FILE_ID)).next_chunk()
     
-    trim_data = {}
-    for line in fh.getvalue().decode().splitlines():
+    config_lines = fh.getvalue().decode().splitlines()
+    batch_history = []
+    
+    file_count = 0
+    for line in config_lines:
         line = line.strip()
         if not line or line.startswith('#'): continue
+        
         parts = [p.strip() for p in line.split('---') if p.strip()]
         if len(parts) >= 3:
+            file_count += 1
+            source_val = parts[0] # This is your Link or Drive ID
+            mode_val = parts[1].upper()
             fade = parts[-1].upper() == 'F'
             times = parts[2:-1] if fade else parts[2:]
-            trim_data[parts[0]] = {'mode': parts[1].upper(), 'times': times, 'fade': fade}
+            
+            # Create the data package for the process_video function
+            data = {'mode': mode_val, 'times': times, 'fade': fade}
+            
+            print(f"\n--- Processing Entry {file_count} ---")
+            # We pass 'source_val' as both the ID and the name for now
+            msg, success = process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
+            batch_history.append(msg)
 
-    results = service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false").execute()
-    files = sorted(results.get('files', []), key=lambda x: x['name'])
-    valid_files = [f for f in files if f['name'] in trim_data]
-    
-    batch_history = []
-    for i, f in enumerate(valid_files):
-        print("\n=== BATCH HISTORY ===")
-        for res in batch_history: print(res)
-        msg, success = process_video(service, f['id'], f['name'], trim_data[f['name']], f"[{i+1}/{len(valid_files)}]", i+1)
-        batch_history.append(msg)
-    # After the loop over valid_files is completely done:
-    print("\n✅ ALL FILES IN CONFIG PROCESSED. FINISHING WORKFLOW.", flush=True)
-    sys.exit(0) # Standard exit tells the loop to stop
+    print("\n✅ ALL ENTRIES IN CONFIG PROCESSED.", flush=True)
+    sys.exit(0)
