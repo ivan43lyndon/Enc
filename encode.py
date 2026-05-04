@@ -169,7 +169,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
             print("🕵️ Analyzing Streamruby...", flush=True)
             input_source, scraped_title = asyncio.run(sniff_streamruby(input_arg))
             if fname == "link":
-                original_name = scraped_title
+                original_name = scraped_title.replace("Watch_","")
 
         # Now download the raw file from the web to GitHub SSD
         UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
