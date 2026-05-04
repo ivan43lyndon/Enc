@@ -1,45 +1,43 @@
-name: Video Encoding Pipeline
+name: Continuous Encoding Loop
 
 on:
-  workflow_dispatch: # Allows you to start it manually from the Actions tab
+  workflow_dispatch: # Allows manual start
+  repository_dispatch:
+    types: [continue_encoding] # Allows the script to call itself
 
 jobs:
-  encode-and-upload:
+  encode:
     runs-on: ubuntu-latest
-    # This gives the job a 6-hour timeout to be safe
-    timeout-minutes: 360 
+    # Grant permission to trigger new runs
+    permissions:
+      contents: write
+      actions: write
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
           python-version: '3.9'
 
-      - name: Install FFmpeg
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
+      - name: Install Dependencies
+        run: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
 
-      - name: Install Python Dependencies
-        run: |
-          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
-
-      - name: First Pass (Run 1)
+      - name: Run Encoder
         env:
           DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
         run: python encode.py
 
-      - name: Second Pass (Run 2 - Resumes if Run 1 timed out)
-        # This step runs even if the first pass reached its internal time limit
-        if: always() 
+      - name: Check for remaining work and loop
+        if: always() # Runs even if the encoder timed out
         env:
-          DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
-        run: python encode.py
-
-      - name: Cleanup Workspace
-        if: always()
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
-          rm -rf Encoding_Cache
+          # This triggers the same workflow to start again
+          curl -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/dispatches \
+            -d '{"event_type": "continue_encoding"}'
