@@ -1,14 +1,13 @@
 name: Continuous Encoding Loop
 
 on:
-  workflow_dispatch: # Allows you to start it manually
+  workflow_dispatch:
   repository_dispatch:
-    types: [continue_encoding] # Allows the script to restart itself
+    types: [continue_encoding]
 
 jobs:
   encode:
     runs-on: ubuntu-latest
-    # Necessary permissions for the loop to trigger
     permissions:
       contents: write
       actions: write
@@ -20,7 +19,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9' # Upgraded to stop the EOL warnings
+          python-version: '3.9'
 
       - name: Install System Dependencies
         run: |
@@ -29,7 +28,7 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib
+          pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
       - name: Run Encoder
         env:
@@ -37,7 +36,7 @@ jobs:
         run: python encode.py
 
       - name: Trigger Loop
-        if: always() # Restart even if the script timed out or had a minor error
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
