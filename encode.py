@@ -10,6 +10,8 @@ from subprocess import Popen, PIPE, STDOUT
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.credentials import Credentials as UserCredentials
+import asyncio
+from playwright.async_api import async_playwright
 
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
@@ -73,6 +75,36 @@ def seconds_to_hms(seconds):
     s = int(seconds)
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
+async def sniff_streamruby(page_url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        # Use a real browser user agent to avoid detection
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        page = await context.new_page()
+        
+        m3u8_url = None
+        video_title = "Video"
+
+        def handle_request(request):
+            nonlocal m3u8_url
+            if ".m3u8" in request.url and not m3u8_url:
+                m3u8_url = request.url
+
+        page.on("request", handle_request)
+        await page.goto(page_url, wait_until="load")
+        
+        # Get Title Silently
+        video_title = (await page.title()).split(" - ")[0].replace(" ", "_")
+        
+        # Trigger Play
+        try:
+            await page.click(".vjs-big-play-button", timeout=5000)
+        except: pass
+
+        await asyncio.sleep(5) # Wait for traffic
+        await browser.close()
+        return m3u8_url, video_title
+
 # --- YOUR EXACT HUD LOGIC ---
 def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str):
     print(f"\n--- {desc}: {display_name} ---", flush=True)
@@ -122,12 +154,43 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         sys.exit(99) # Exit cleanly to trigger the next loop
     
     # Download
-    print(f"Downloading {display_name}...", flush=True)
-    request = service.files().get_media(fileId=file_id)
-    with io.FileIO(temp_in, 'wb') as fh:
-        downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024*10)
-        done = False
-        while not done: _, done = downloader.next_chunk()
+    input_arg = file_id 
+    original_name = fname
+    
+    if input_arg.startswith("http"):
+        if ".mp4" in input_arg or ".mkv" in input_arg:
+            # Case: Direct Link
+            input_source = input_arg
+            # Use the filename from the URL if fname is generic
+            if fname == "link": 
+                original_name = input_arg.split("/")[-1].split("?")[0]
+        else:
+            # Case: Streamruby Page
+            print("🕵️ Analyzing Streamruby...", flush=True)
+            input_source, scraped_title = asyncio.run(sniff_streamruby(input_arg))
+            if fname == "link":
+                original_name = scraped_title
+
+        # Now download the raw file from the web to GitHub SSD
+        print(f"📥 Downloading Web Stream to SSD...", flush=True)
+        raw_download_cmd = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'error',
+            '-headers', f"Referer: {input_arg}\r\n",
+            '-i', input_source,
+            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', temp_in
+        ]
+        subprocess.run(raw_download_cmd)
+    else:
+        # Case: Standard Google Drive Download (Your original logic)
+        print(f"📥 Downloading from Drive: {display_name}...", flush=True)
+        request = service.files().get_media(fileId=file_id)
+        with io.FileIO(temp_in, 'wb') as fh:
+            downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024*10)
+            done = False
+            while not done: _, done = downloader.next_chunk()
+    
+    # Update the output name for the final Drive upload
+    output_name = original_name if original_name.endswith(".mp4") else f"{original_name}.mp4"
 
     # Metadata
     probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
