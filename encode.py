@@ -119,7 +119,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     elapsed = time.time() - START_TIME
     if elapsed > TIMEOUT_LIMIT:
         print(f"\n⚠️ TIME LIMIT APPROACHING ({int(elapsed)}s). Stopping to prevent cutoff.", flush=True)
-        sys.exit(0) # Exit cleanly to trigger the next loop
+        sys.exit(99) # Exit cleanly to trigger the next loop
     
     # Download
     print(f"Downloading {display_name}...", flush=True)
@@ -235,3 +235,6 @@ if __name__ == "__main__":
         for res in batch_history: print(res)
         msg, success = process_video(service, f['id'], f['name'], trim_data[f['name']], f"[{i+1}/{len(valid_files)}]", i+1)
         batch_history.append(msg)
+    # After the loop over valid_files is completely done:
+    print("\n✅ ALL FILES IN CONFIG PROCESSED. FINISHING WORKFLOW.", flush=True)
+    sys.exit(0) # Standard exit tells the loop to stop
