@@ -79,7 +79,7 @@ async def sniff_streamruby(page_url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         # Use a real browser user agent to avoid detection
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
         page = await context.new_page()
         
         m3u8_url = None
@@ -177,11 +177,15 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         print(f"📥 Downloading Web Stream to SSD...", flush=True)
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error',
-            '-headers', f"Referer: {file_id}\r\nUser-Agent: {UA}\r\n", # Added UA here
+            '-headers', f"Referer: {file_id}\r\nUser-Agent: {UA}\r\nAccept: */*\r\nConnection: keep-alive\r\n",
+            '-rw_timeout', '10000000', # 10 seconds timeout for read/write
+            '-reconnect', '1',
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5',
             '-i', input_source,
             '-c', 'copy', 
             '-bsf:a', 'aac_adtstoasc', 
-            '-movflags', 'faststart', # Helps with stream stability
+            '-movflags', 'faststart',
             temp_in
         ]
         subprocess.run(raw_download_cmd)
