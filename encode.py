@@ -55,30 +55,45 @@ def get_mb_per_minute_ratio(height):
     elif height >= 480: return 5.0
     else: return 4.0
 
+def time_to_seconds(t):
+    if not t: return 0.0
+    try:
+        if ':' in t:
+            parts = t.split(':')
+            if len(parts) == 3: return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
+            elif len(parts) == 2: return float(parts[0]) * 60 + float(parts[1])
+        return float(t)
+    except: return 0.0
+
+def seconds_to_hms(seconds):
+    s = int(seconds)
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+
 # --- YOUR EXACT HUD LOGIC ---
-def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str, offset=0):
-    print(f"\n--- {desc} ---")
+def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str):
+    print(f"\n--- {desc}: {display_name} ---", flush=True)
     process = Popen(cmd, stdout=PIPE, stderr=STDOUT, universal_newlines=True, bufsize=1)
     time_regex = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d+)")
-    total_stamp = seconds_to_hms(duration)
-    start_wall_time = time.time()
-
+    
+    last_print_time = 0
+    
     for line in process.stdout:
         match = time_regex.search(line)
         if match:
-            cur_s = max(0, time_to_seconds(match.group(1)) - offset)
-            current_stamp = seconds_to_hms(cur_s)
-            elapsed_wall_time = time.time() - start_wall_time
-            speed = cur_s / elapsed_wall_time if elapsed_wall_time > 0 else 0
-            remaining_s = (duration - cur_s) / speed if speed > 0.1 else 0
-            eta_str = seconds_to_hms(remaining_s)
-            pct = (cur_s / duration) * 100 if duration > 0 else 0
-
-            # YOUR ULTIMATE HUD PRINT
-            sys.stdout.write(f"\r📦 {batch_str} | {display_name[:15]:<15} | {pct:5.1f}% | {current_stamp} / {total_stamp} | {speed:3.1f}x | ETA: {eta_str} | Target: {target_size:.1f}MB")
-            sys.stdout.flush()
+            # Only print every 5 seconds to avoid flooding the log, but keep it moving
+            current_wall_time = time.time()
+            if current_wall_time - last_print_time > 5:
+                cur_s = time_to_seconds(match.group(1))
+                pct = (cur_s / duration) * 100 if duration > 0 else 0
+                # Removed the \r so GitHub Actions is forced to show the line
+                print(f"📦 {batch_str} | {display_name} | {pct:5.1f}% | {match.group(1)} / {seconds_to_hms(duration)}", flush=True)
+                last_print_time = current_wall_time
+                
     process.wait()
+    if process.returncode != 0:
+        print(f"❌ FFMPEG FAILED on {display_name}", flush=True)
     return process.returncode == 0
+
 
 # --- CORE LOGIC (Restored from your snippet) ---
 def process_video(service, file_id, fname, data, batch_str, file_num):
