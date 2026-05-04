@@ -31,12 +31,21 @@ jobs:
           pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
 
       - name: Run Encoder
+        id: encoder_step
         env:
           DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
-        run: python encode.py
+        # We add 'continue-on-error' so the workflow doesn't turn red 
+        # when we exit early for a timeout.
+        continue-on-error: true
+        run: |
+          python encode.py
+          # The script will now set an environment variable 'RESTART_NEEDED' 
+          # which we capture here to pass to the next step.
+          echo "status=$?" >> $GITHUB_OUTPUT
 
       - name: Trigger Loop
-        if: always()
+        # ONLY run if the script exited with code 99 (our timeout code)
+        if: steps.encoder_step.outputs.status == '99'
         env:
           GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
