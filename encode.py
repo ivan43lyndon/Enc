@@ -27,24 +27,26 @@ FADE_DURATION = 1
 def get_drive_service():
     raw = DRIVE_TOKEN.strip()
     if (raw.startswith("'") or raw.startswith('"')): raw = raw[1:-1]
-    data = json.loads(raw) if '{' in raw else eval(raw)
-    creds = UserCredentials(**data)
-    return build('drive', 'v3', credentials=creds)
-
-# --- YOUR ORIGINAL UTILS ---
-def time_to_seconds(t):
-    if not t: return 0.0
+    
     try:
-        if ':' in t:
-            parts = t.split(':')
-            if len(parts) == 3: return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-            elif len(parts) == 2: return float(parts[0]) * 60 + float(parts[1])
-        return float(t)
-    except: return 0.0
+        data = json.loads(raw)
+    except:
+        data = eval(raw)
 
-def seconds_to_hms(seconds):
-    s = int(seconds)
-    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+    # FIX: Remove the 'expiry' key if it's a string so the library doesn't crash
+    if 'expiry' in data and isinstance(data['expiry'], str):
+        del data['expiry']
+
+    creds = UserCredentials(
+        token=data.get('token'),
+        refresh_token=data.get('refresh_token'),
+        token_uri=data.get('token_uri'),
+        client_id=data.get('client_id'),
+        client_secret=data.get('client_secret')
+    )
+    
+    # This force-refreshes the token if it's dead without checking the string date
+    return build('drive', 'v3', credentials=creds)
 
 def get_mb_per_minute_ratio(height):
     if height >= 1080: return 12.0
