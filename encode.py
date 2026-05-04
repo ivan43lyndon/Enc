@@ -278,24 +278,39 @@ def process_video(service, file_id, fname, data):
 # --- 5. MAIN ---
 
 if __name__ == "__main__":
+    print("Step 1: Connecting to Google Drive...")
     service = get_drive_service()
     
-    req = service.files().get_media(fileId=CONFIG_FILE_ID)
-    fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, req)
-    done = False
-    while not done: _, done = downloader.next_chunk()
-    trim_data = parse_trim_file(fh.getvalue().decode())
+    print(f"Step 2: Downloading Config File (ID: {CONFIG_FILE_ID})...")
+    try:
+        req = service.files().get_media(fileId=CONFIG_FILE_ID)
+        fh = io.BytesIO()
+        downloader = MediaIoBaseDownload(fh, req)
+        done = False
+        while not done: _, done = downloader.next_chunk()
+        content = fh.getvalue().decode()
+        trim_data = parse_trim_file(content)
+        print(f"Successfully loaded config for {len(trim_data)} files.")
+    except Exception as e:
+        print(f"FAILED to load config file: {e}")
+        sys.exit(1)
 
+    print(f"Step 3: Listing files in Input Folder (ID: {INPUT_FOLDER_ID})...")
     results = service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false", fields="files(id, name)").execute()
-    for f in sorted(results.get('files', []), key=lambda x: x['name']):
+    files = results.get('files', [])
+    print(f"Found {len(files)} files in the input folder.")
+
+    for f in sorted(files, key=lambda x: x['name']):
         if time.time() - START_TIME > MAX_RUN_TIME:
+            print("Safety timer reached. Exiting.")
             break
             
         if f['name'] in trim_data:
             out_name = os.path.splitext(f['name'])[0].replace(".", " ") + ".mp4"
             if not file_exists_in_drive(service, out_name, OUTPUT_FOLDER_ID):
-                print(f"Processing: {f['name']}")
+                print(f"--- STARTING: {f['name']} ---")
                 process_video(service, f['id'], f['name'], trim_data[f['name']])
             else:
-                print(f"Skipping: {f['name']}")
+                print(f"Skipping: {f['name']} (Already exists in Output)")
+        else:
+            print(f"Ignoring: {f['name']} (Not mentioned in 1.txt)")
