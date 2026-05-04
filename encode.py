@@ -11,7 +11,7 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIGURATION ---
 START_TIME = time.time()
-MAX_RUN_TIME = 5 * 3600  # 5h 45m
+MAX_RUN_TIME = 5.75 * 3600  # 5h 45m
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 AUDIO_BITRATE_KBPS = 96
@@ -22,12 +22,12 @@ FADE_DURATION = 1
 
 DRIVE_TOKEN = os.environ.get('DRIVE_TOKEN')
 
-# !!! REPLACE THESE IDs !!!
-INPUT_FOLDER_ID = 'YOUR_INPUT_FOLDER_ID_HERE' 
-OUTPUT_FOLDER_ID = 'YOUR_OUTPUT_FOLDER_ID_HERE'
-CONFIG_FILE_ID = 'YOUR_1_TXT_FILE_ID_HERE'
+# !!! ENSURE THESE ARE CORRECT !!!
+INPUT_FOLDER_ID = 'YOUR_INPUT_FOLDER_ID' 
+OUTPUT_FOLDER_ID = 'YOUR_OUTPUT_FOLDER_ID'
+CONFIG_FILE_ID = 'YOUR_1_TXT_ID'
 
-# --- 2. MATH & PARSING ---
+# --- 2. LOGIC FUNCTIONS ---
 
 def get_mb_per_minute_ratio(height):
     if height >= 1080: return 12.0
@@ -55,12 +55,8 @@ def parse_trim_file(content):
         if len(parts) >= 3:
             filename = parts[0]
             mode = parts[1].upper()
-            fade = False
-            if parts[-1].upper() == 'F':
-                fade = True
-                times = parts[2:-1]
-            else:
-                times = parts[2:]
+            fade = parts[-1].upper() == 'F'
+            times = parts[2:-1] if fade else parts[2:]
             trim_data[filename] = {'mode': mode, 'times': times, 'fade': fade}
     return trim_data
 
@@ -77,18 +73,36 @@ def get_video_metadata(input_file):
         return w, h, dur, fps
     except: return 0, 0, 0.0, 30.0
 
-# --- 3. DRIVE BRIDGE ---
+# --- 3. THE CLEANER AUTH BLOCK ---
 
 def get_drive_service():
-    # Bulletproof parsing for the token
-    try:
-        data = json.loads(DRIVE_TOKEN)
-    except:
-        try:
-            data = json.loads(eval(DRIVE_TOKEN))
-        except:
-            data = eval(DRIVE_TOKEN)
+    if not DRIVE_TOKEN:
+        raise ValueError("DRIVE_TOKEN secret is empty or missing!")
     
+    raw = DRIVE_TOKEN.strip()
+    # Remove surrounding quotes often added by mobile editors
+    if (raw.startswith("'") and raw.endswith("'")) or (raw.startswith('"') and raw.endswith('"')):
+        raw = raw[1:-1]
+    raw = raw.replace('\\n', '\n')
+
+    def try_parse(content):
+        try: return json.loads(content)
+        except:
+            try: return eval(content)
+            except: return None
+
+    data = try_parse(raw)
+    if isinstance(data, str):
+        data = try_parse(data)
+
+    if not data or not isinstance(data, dict):
+        # This will show in GitHub logs to help us debug
+        print(f"DEBUG: Data type is {type(data)}. Content starts with: {str(raw)[:20]}")
+        raise ValueError("Could not parse DRIVE_TOKEN into a dictionary.")
+
+    if 'client_email' not in data:
+        raise ValueError(f"Missing client_email. Found keys: {list(data.keys())}")
+            
     creds = Credentials.from_service_account_info(data)
     return build('drive', 'v3', credentials=creds)
 
@@ -97,18 +111,17 @@ def file_exists_in_drive(service, name, folder_id):
     results = service.files().list(q=query, fields="files(id)").execute()
     return len(results.get('files', [])) > 0
 
-# --- 4. CORE PROCESSING ---
+# --- 4. PROCESSING ---
 
 def process_video(service, file_id, fname, data):
-    temp_in = "temp_input.mp4"
-    final_out = "final_output.mp4"
+    temp_in, final_out = "temp_in.mp4", "final_out.mp4"
     
     # Download
     request = service.files().get_media(fileId=file_id)
-    fh = io.FileIO(temp_in, 'wb')
-    downloader = MediaIoBaseDownload(fh, request)
-    done = False
-    while not done: _, done = downloader.next_chunk()
+    with io.FileIO(temp_in, 'wb') as fh:
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done: _, done = downloader.next_chunk()
 
     src_w, src_h, total_dur, src_fps = get_video_metadata(temp_in)
     src_size = os.path.getsize(temp_in) / (1024*1024)
@@ -117,15 +130,14 @@ def process_video(service, file_id, fname, data):
     segments = []
     total_trimmed_dur = 0.0
     for i in range(0, len(time_points), 2):
-        if i+1 >= len(time_points): continue
+        if i+1 >= len(time_points): break
         s_s = time_to_seconds(time_points[i])
-        limit = total_dur if total_dur > 0 else 999999
-        e_s = min(time_to_seconds(time_points[i+1]), limit)
+        e_s = min(time_to_seconds(time_points[i+1]), total_dur if total_dur > 0 else 999999)
         if s_s < e_s:
             segments.append((time_points[i], e_s - s_s))
             total_trimmed_dur += (e_s - s_s)
 
-    if not segments: 
+    if not segments:
         if os.path.exists(temp_in): os.remove(temp_in)
         return False
 
@@ -146,7 +158,6 @@ def process_video(service, file_id, fname, data):
         vf += f",fade=t=out:st={total_trimmed_dur - FADE_DURATION}:d={FADE_DURATION}"
         af = f"afade=t=out:st={total_trimmed_dur - FADE_DURATION}:d={FADE_DURATION}"
 
-    # FFMPEG EXECUTION
     start, dur = segments[0]
     if mode == 'T':
         cmd = ['ffmpeg', '-y', '-ss', start, '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', '-movflags', '+faststart', final_out]
@@ -159,36 +170,33 @@ def process_video(service, file_id, fname, data):
     subprocess.run(cmd, stderr=subprocess.DEVNULL)
 
     if os.path.exists(final_out):
-        out_name = os.path.splitext(fname)[0].replace(".", " ") + ".mp4"
+        clean_name = os.path.splitext(fname)[0].replace(".", " ") + ".mp4"
         media = MediaFileUpload(final_out, resumable=True)
-        service.files().create(body={'name': out_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media).execute()
+        service.files().create(body={'name': clean_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media).execute()
         os.remove(final_out)
     
     if os.path.exists(temp_in): os.remove(temp_in)
     return True
 
-# --- 5. MAIN ---
+# --- 5. RUN ---
 
 if __name__ == "__main__":
     service = get_drive_service()
     
-    # 1.txt
-    request = service.files().get_media(fileId=CONFIG_FILE_ID)
+    # Get 1.txt
+    req = service.files().get_media(fileId=CONFIG_FILE_ID)
     fh = io.BytesIO()
-    downloader = MediaIoBaseDownload(fh, request)
+    downloader = MediaIoBaseDownload(fh, req)
     done = False
     while not done: _, done = downloader.next_chunk()
     trim_data = parse_trim_file(fh.getvalue().decode())
 
-    # Files
+    # Get File list
     results = service.files().list(q=f"'{INPUT_FOLDER_ID}' in parents and trashed = false", fields="files(id, name)").execute()
-    files = results.get('files', [])
-
-    for f in sorted(files, key=lambda x: x['name']):
-        if time.time() - START_TIME > MAX_RUN_TIME:
-            break
-
+    for f in sorted(results.get('files', []), key=lambda x: x['name']):
+        if time.time() - START_TIME > MAX_RUN_TIME: break
         if f['name'] in trim_data:
             out_name = os.path.splitext(f['name'])[0].replace(".", " ") + ".mp4"
             if not file_exists_in_drive(service, out_name, OUTPUT_FOLDER_ID):
+                print(f"Processing: {f['name']}")
                 process_video(service, f['id'], f['name'], trim_data[f['name']])
