@@ -39,7 +39,7 @@ jobs:
       - name: Trigger Loop
         if: always() # Restart even if the script timed out or had a minor error
         env:
-          GH_TOKEN: ${{ secrets.secrets.GH_PAT }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
         run: |
           curl -L \
             -X POST \
