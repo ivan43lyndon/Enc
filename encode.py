@@ -10,7 +10,7 @@ from google.oauth2.service_account import Credentials
 
 # --- 1. CONFIGURATION (Direct from your Setup) ---
 START_TIME = time.time()
-MAX_RUN_TIME = 5.75 * 3600  # Stop at 5h 45m to trigger loop
+MAX_RUN_TIME = 5 * 3600  # Stop at 5h 45m to trigger loop
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 AUDIO_BITRATE_KBPS = 96
