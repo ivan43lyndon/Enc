@@ -106,19 +106,20 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     # Search for the output file in your Output Folder
     q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
     check = service.files().list(q=q).execute().get('files', [])
+
+    display_name = f"File {file_num}"
+    temp_in = "temp_in.mp4"
+    final_out = "final_out.mp4"
     
     if check:
-        print(f"⏩ SKIPPING: {fname} (Already exists in Drive)", flush=True)
-        return f"⏩ SKIPPED: {fname}", True
+        print(f"⏩ SKIPPING: {display_name} (Already exists in Drive)", flush=True)
+        return f"⏩ SKIPPED: {display_name}", True
 
     # --- B. TIMEOUT CHECK ---
     elapsed = time.time() - START_TIME
     if elapsed > TIMEOUT_LIMIT:
         print(f"\n⚠️ TIME LIMIT APPROACHING ({int(elapsed)}s). Stopping to prevent cutoff.", flush=True)
         sys.exit(0) # Exit cleanly to trigger the next loop
-    display_name = f"File {file_num}"
-    temp_in = "temp_in.mp4"
-    final_out = "final_out.mp4"
     
     # Download
     print(f"Downloading {display_name}...", flush=True)
@@ -163,10 +164,10 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         is_last = (i == len(segments) - 1)
         
         if mode == 'T':
-            cmd = ['ffmpeg', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', seg_out]
+            cmd = ['ffmpeg', '-hide_banner', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', seg_out]
         else:
             vf = vf_base
-            cmd = ['ffmpeg', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
+            cmd = ['ffmpeg', '-hide_banner', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
             if do_fade and is_last:
                 cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             else:
@@ -180,7 +181,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     if len(segment_files) > 1:
         with open("list.txt", "w") as f:
             for s in segment_files: f.write(f"file '{s}'\n")
-        subprocess.run(['ffmpeg', '-y', '-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', final_out])
+        subprocess.run(['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', final_out])
         for s in segment_files: os.remove(s)
         os.remove("list.txt")
     else:
@@ -188,7 +189,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
 
     # Upload
     # Upload to Drive with Resumable Retry Logic
-    print(f"Uploading {output_name}...", flush=True)
+    print(f"Uploading {display_name}...", flush=True)
     media = MediaFileUpload(final_out, mimetype='video/mp4', resumable=True)
     request = service.files().create(
         body={'name': output_name, 'parents': [OUTPUT_FOLDER_ID]},
