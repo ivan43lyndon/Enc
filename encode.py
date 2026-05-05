@@ -134,8 +134,7 @@ async def resolve_any_link(input_url):
     is_big_three = any(domain in input_url for domain in ["bunkr", "pixeldrain", "gofile"])
     
     async with async_playwright() as p:
-        # Added --no-sandbox for GitHub Actions/Linux compatibility
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         page = await context.new_page()
         
@@ -145,41 +144,33 @@ async def resolve_any_link(input_url):
         async def handle_response(response):
             nonlocal found_url, found_size
             u = response.url
-            h = response.headers
-            ctype = h.get("content-type", "").lower()
-            
-            if is_big_three:
-                if "video" in ctype or "octet-stream" in ctype or any(ext in u.lower() for ext in [".mp4", ".mkv"]):
-                    try:
-                        size = int(h.get("content-length", 0))
-                        if size > found_size:
-                            found_size = size
-                            found_url = u
-                    except: pass
-            else:
-                if ".m3u8" in u and not found_url:
-                    found_url = u
+            if is_big_three and any(ext in u.lower() for ext in [".mp4", ".mkv", ".m4v"]):
+                try:
+                    h = response.headers
+                    size = int(h.get("content-length", 0))
+                    if size > 2000000 and size > found_size:
+                        found_size = size
+                        found_url = u
+                except: pass
+            elif ".m3u8" in u and not found_url:
+                found_url = u
 
         page.on("response", handle_response)
-
         try:
-            # wait_until="load" is safer for sniffing than "networkidle" which can timeout
-            await page.goto(input_url, wait_until="load", timeout=60000)
+            await page.goto(input_url, wait_until="networkidle", timeout=60000)
             if is_big_three:
                 await page.mouse.click(960, 540)
-                await asyncio.sleep(8)
-            else:
-                try: await page.click(".vjs-big-play-button", timeout=5000)
-                except: pass
-                await asyncio.sleep(5)
-        except: pass
+                await asyncio.sleep(10)
+            
+            # --- NEW: Capture Cookies ---
+            cookies = await context.cookies()
+            cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+        except: 
+            cookie_str = ""
         finally:
             await browser.close()
 
-        if not found_url and any(ext in input_url.lower() for ext in [".mp4", ".mkv"]):
-            found_url = input_url
-
-        return found_url
+        return found_url, cookie_str
 
 def process_video(service, file_id, fname, data, batch_str, file_num):
     # --- FIX 1: UNIFIED NAMING LOGIC ---
@@ -206,17 +197,24 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     # --- 3. DOWNLOAD / GRAB LOGIC ---
     if source_input.startswith("http"):
         print(f"🕵️ Resolving Link: {source_input}...", flush=True)
-        resolved_link = asyncio.run(resolve_any_link(source_input))
+        resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
         
         if not resolved_link:
-            print(f"❌ SKIP: No valid stream/file found for {source_input}", flush=True)
-            return f"❌ FAILED: {display_name}", False
+            return f"❌ FAILED: No stream found", False
 
         print(f"📥 Downloading Resolved Stream...", flush=True)
+        
+        # Build strict headers for Gofile
         UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        headers = f"Referer: {source_input}\r\n"
+        headers += f"User-Agent: {UA}\r\n"
+        if session_cookies:
+            headers += f"Cookie: {session_cookies}\r\n"
+
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-            '-headers', f"Referer: {source_input}\r\nUser-Agent: {UA}\r\n",
+            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', # Anti-drop flags
+            '-headers', headers,
             '-i', resolved_link,
             '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
         ]
