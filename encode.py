@@ -131,36 +131,31 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
     return process.returncode == 0
 
 async def resolve_any_link(input_url):
-    """
-    Handles the redirection/sniffing logic for Bunkr, Pixeldrain, Gofile, 
-    or Fallback to M3U8 sniffing.
-    """
     is_big_three = any(domain in input_url for domain in ["bunkr", "pixeldrain", "gofile"])
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        # Added --no-sandbox for GitHub Actions/Linux compatibility
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         page = await context.new_page()
         
         found_url = None
         found_size = 0
 
-        # --- NETWORK SNIFFER INTERCEPTOR ---
         async def handle_response(response):
             nonlocal found_url, found_size
             u = response.url
             h = response.headers
             ctype = h.get("content-type", "").lower()
             
-            # Logic A: Trawler for Big Three (Looks for largest binary file)
             if is_big_three:
                 if "video" in ctype or "octet-stream" in ctype or any(ext in u.lower() for ext in [".mp4", ".mkv"]):
-                    size = int(h.get("content-length", 0))
-                    if size > found_size:
-                        found_size = size
-                        found_url = u
-            
-            # Logic B: Fallback Sniffer (Looks for M3U8 Master)
+                    try:
+                        size = int(h.get("content-length", 0))
+                        if size > found_size:
+                            found_size = size
+                            found_url = u
+                    except: pass
             else:
                 if ".m3u8" in u and not found_url:
                     found_url = u
@@ -168,12 +163,12 @@ async def resolve_any_link(input_url):
         page.on("response", handle_response)
 
         try:
-            await page.goto(input_url, wait_until="networkidle", timeout=60000)
+            # wait_until="load" is safer for sniffing than "networkidle" which can timeout
+            await page.goto(input_url, wait_until="load", timeout=60000)
             if is_big_three:
-                await page.mouse.click(960, 540) # Trigger potential hidden streams
+                await page.mouse.click(960, 540)
                 await asyncio.sleep(8)
             else:
-                # Original Streamruby/M3U8 logic
                 try: await page.click(".vjs-big-play-button", timeout=5000)
                 except: pass
                 await asyncio.sleep(5)
@@ -181,25 +176,25 @@ async def resolve_any_link(input_url):
         finally:
             await browser.close()
 
-        # Final check: If nothing found but input_url is a direct video link
         if not found_url and any(ext in input_url.lower() for ext in [".mp4", ".mkv"]):
             found_url = input_url
 
         return found_url
 
-# --- MODIFIED PROCESS_VIDEO ---
 def process_video(service, file_id, fname, data, batch_str, file_num):
-    # --- 1. HANDLE LINK#NAME LOGIC ---
+    # --- FIX 1: UNIFIED NAMING LOGIC ---
     source_input = file_id
-    custom_name = fname
+    original_name = fname # Default name (e.g., "link")
     
     if "#" in source_input:
-        source_input, custom_name = source_input.split("#", 1)
+        source_input, original_name = source_input.split("#", 1)
 
     display_name = f"File {file_num}"
     temp_in = "temp_in.mp4"
     final_out = "final_out.mp4"
-    output_name = custom_name if custom_name.endswith(".mp4") else f"{custom_name}.mp4"
+    
+    # Ensure extension is consistent
+    output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
 
     # --- 2. RESUME CHECK ---
     q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
@@ -227,16 +222,17 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         ]
         subprocess.run(raw_download_cmd)
     else:
-        # Case: Standard Google Drive Download (Your original logic)
         print(f"📥 Downloading from Drive: {display_name}...", flush=True)
-        request = service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=source_input)
         with io.FileIO(temp_in, 'wb') as fh:
             downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024*10)
             done = False
             while not done: _, done = downloader.next_chunk()
     
-    # Update the output name for the final Drive upload
-    output_name = original_name if original_name.endswith(".mp4") else f"{original_name}.mp4"
+    # --- FIX 2: VALIDATE DOWNLOAD BEFORE PROBING ---
+    if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 1000:
+        print(f"❌ FAILED: Download for {display_name} resulted in missing or empty file.", flush=True)
+        return f"❌ FAILED: {display_name}", False
 
     # Metadata
     probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
