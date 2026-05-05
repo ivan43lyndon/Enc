@@ -130,63 +130,100 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
         print(f"鉂� FFMPEG FAILED on {display_name}", flush=True)
     return process.returncode == 0
 
+async def resolve_any_link(input_url):
+    """
+    Handles the redirection/sniffing logic for Bunkr, Pixeldrain, Gofile, 
+    or Fallback to M3U8 sniffing.
+    """
+    is_big_three = any(domain in input_url for domain in ["bunkr", "pixeldrain", "gofile"])
+    
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        page = await context.new_page()
+        
+        found_url = None
+        found_size = 0
 
-# --- CORE LOGIC (Restored from your snippet) ---
+        # --- NETWORK SNIFFER INTERCEPTOR ---
+        async def handle_response(response):
+            nonlocal found_url, found_size
+            u = response.url
+            h = response.headers
+            ctype = h.get("content-type", "").lower()
+            
+            # Logic A: Trawler for Big Three (Looks for largest binary file)
+            if is_big_three:
+                if "video" in ctype or "octet-stream" in ctype or any(ext in u.lower() for ext in [".mp4", ".mkv"]):
+                    size = int(h.get("content-length", 0))
+                    if size > found_size:
+                        found_size = size
+                        found_url = u
+            
+            # Logic B: Fallback Sniffer (Looks for M3U8 Master)
+            else:
+                if ".m3u8" in u and not found_url:
+                    found_url = u
+
+        page.on("response", handle_response)
+
+        try:
+            await page.goto(input_url, wait_until="networkidle", timeout=60000)
+            if is_big_three:
+                await page.mouse.click(960, 540) # Trigger potential hidden streams
+                await asyncio.sleep(8)
+            else:
+                # Original Streamruby/M3U8 logic
+                try: await page.click(".vjs-big-play-button", timeout=5000)
+                except: pass
+                await asyncio.sleep(5)
+        except: pass
+        finally:
+            await browser.close()
+
+        # Final check: If nothing found but input_url is a direct video link
+        if not found_url and any(ext in input_url.lower() for ext in [".mp4", ".mkv"]):
+            found_url = input_url
+
+        return found_url
+
+# --- MODIFIED PROCESS_VIDEO ---
 def process_video(service, file_id, fname, data, batch_str, file_num):
-    # --- A. RESUME CHECK ---
-    output_name = fname.replace(".mp4", ".mp4")
-    # Search for the output file in your Output Folder
-    q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
-    check = service.files().list(q=q).execute().get('files', [])
+    # --- 1. HANDLE LINK#NAME LOGIC ---
+    source_input = file_id
+    custom_name = fname
+    
+    if "#" in source_input:
+        source_input, custom_name = source_input.split("#", 1)
 
     display_name = f"File {file_num}"
     temp_in = "temp_in.mp4"
     final_out = "final_out.mp4"
-    
+    output_name = custom_name if custom_name.endswith(".mp4") else f"{custom_name}.mp4"
+
+    # --- 2. RESUME CHECK ---
+    q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
+    check = service.files().list(q=q).execute().get('files', [])
     if check:
-        print(f"⏩ SKIPPING: {display_name} (Already exists in Drive)", flush=True)
-        return f"⏩ SKIPPED: {display_name}", True
+        print(f"⏩ SKIPPING: {output_name} (Exists)", flush=True)
+        return f"⏩ SKIPPED: {output_name}", True
 
-    # --- B. TIMEOUT CHECK ---
-    elapsed = time.time() - START_TIME
-    if elapsed > TIMEOUT_LIMIT:
-        print(f"\n⚠️ TIME LIMIT APPROACHING ({int(elapsed)}s). Stopping to prevent cutoff.", flush=True)
-        sys.exit(99) # Exit cleanly to trigger the next loop
-    
-    # Download
-    input_arg = file_id 
-    original_name = fname
-    
-    if input_arg.startswith("http"):
-        if ".mp4" in input_arg or ".mkv" in input_arg:
-            # Case: Direct Link
-            input_source = input_arg
-            # Use the filename from the URL if fname is generic
-            if fname == "link": 
-                original_name = input_arg.split("/")[-1].split("?")[0]
-        else:
-            # Case: Streamruby Page
-            print("🕵️ Analyzing Streamruby...", flush=True)
-            input_source, scraped_title = asyncio.run(sniff_streamruby(input_arg))
-            if fname == "link":
-                original_name = scraped_title.replace("Watch_","")
+    # --- 3. DOWNLOAD / GRAB LOGIC ---
+    if source_input.startswith("http"):
+        print(f"🕵️ Resolving Link: {source_input}...", flush=True)
+        resolved_link = asyncio.run(resolve_any_link(source_input))
+        
+        if not resolved_link:
+            print(f"❌ SKIP: No valid stream/file found for {source_input}", flush=True)
+            return f"❌ FAILED: {display_name}", False
 
-        # Now download the raw file from the web to GitHub SSD
-        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-
-        print(f"📥 Downloading Web Stream to SSD...", flush=True)
+        print(f"📥 Downloading Resolved Stream...", flush=True)
+        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         raw_download_cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'error',
-            '-headers', f"Referer: {file_id}\r\nUser-Agent: {UA}\r\nAccept: */*\r\nConnection: keep-alive\r\n",
-            '-rw_timeout', '10000000', # 10 seconds timeout for read/write
-            '-reconnect', '1',
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
-            '-i', input_source,
-            '-c', 'copy', 
-            '-bsf:a', 'aac_adtstoasc', 
-            '-movflags', 'faststart',
-            temp_in
+            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+            '-headers', f"Referer: {source_input}\r\nUser-Agent: {UA}\r\n",
+            '-i', resolved_link,
+            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
         ]
         subprocess.run(raw_download_cmd)
     else:
