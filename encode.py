@@ -39,7 +39,6 @@ def get_drive_service():
     except:
         data = eval(raw)
 
-    # FIX: Remove the 'expiry' key if it's a string so the library doesn't crash
     if 'expiry' in data and isinstance(data['expiry'], str):
         del data['expiry']
 
@@ -51,7 +50,6 @@ def get_drive_service():
         client_secret=data.get('client_secret')
     )
     
-    # This force-refreshes the token if it's dead without checking the string date
     return build('drive', 'v3', credentials=creds)
 
 def get_mb_per_minute_ratio(height):
@@ -75,66 +73,12 @@ def seconds_to_hms(seconds):
     s = int(seconds)
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
-async def sniff_streamruby(page_url):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        # Use a real browser user agent to avoid detection
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        page = await context.new_page()
-        
-        m3u8_url = None
-        video_title = "Video"
-
-        def handle_request(request):
-            nonlocal m3u8_url
-            if ".m3u8" in request.url and not m3u8_url:
-                m3u8_url = request.url
-
-        page.on("request", handle_request)
-        await page.goto(page_url, wait_until="load")
-        
-        # Get Title Silently
-        video_title = (await page.title()).split(" - ")[0].replace(" ", "_")
-        
-        # Trigger Play
-        try:
-            await page.click(".vjs-big-play-button", timeout=5000)
-        except: pass
-
-        await asyncio.sleep(5) # Wait for traffic
-        await browser.close()
-        return m3u8_url, video_title
-
-# --- YOUR EXACT HUD LOGIC ---
-def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str):
-    print(f"\n--- {desc}: {display_name} ---", flush=True)
-    process = Popen(cmd, stdout=PIPE, stderr=STDOUT, universal_newlines=True, bufsize=1)
-    time_regex = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d+)")
-    
-    last_print_time = 0
-    
-    for line in process.stdout:
-        match = time_regex.search(line)
-        if match:
-            # Only print every 5 seconds to avoid flooding the log, but keep it moving
-            current_wall_time = time.time()
-            if current_wall_time - last_print_time > 5:
-                cur_s = time_to_seconds(match.group(1))
-                pct = (cur_s / duration) * 100 if duration > 0 else 0
-                # Removed the \r so GitHub Actions is forced to show the line
-                print(f"馃摝 {batch_str} | {display_name} | {pct:5.1f}% | {match.group(1)} / {seconds_to_hms(duration)}", flush=True)
-                last_print_time = current_wall_time
-                
-    process.wait()
-    if process.returncode != 0:
-        print(f"鉂� FFMPEG FAILED on {display_name}", flush=True)
-    return process.returncode == 0
-
+# --- UPDATED SNIFFER FOR PIXELDRAIN ---
 async def resolve_any_link(input_url):
     is_big_three = any(domain in input_url for domain in ["bunkr", "pixeldrain", "gofile"])
     
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         page = await context.new_page()
         
@@ -144,6 +88,12 @@ async def resolve_any_link(input_url):
         async def handle_response(response):
             nonlocal found_url, found_size
             u = response.url
+            
+            # Specifically catch Pixeldrain API downloads
+            if "pixeldrain.com/api/file/" in u:
+                found_url = u
+                return
+
             if is_big_three and any(ext in u.lower() for ext in [".mp4", ".mkv", ".m4v"]):
                 try:
                     h = response.headers
@@ -158,11 +108,13 @@ async def resolve_any_link(input_url):
         page.on("response", handle_response)
         try:
             await page.goto(input_url, wait_until="networkidle", timeout=60000)
-            if is_big_three:
+            if "pixeldrain.com" in input_url:
+                try: await page.click("text=Download", timeout=5000)
+                except: pass
+            elif is_big_three:
                 await page.mouse.click(960, 540)
-                await asyncio.sleep(10)
             
-            # --- NEW: Capture Cookies ---
+            await asyncio.sleep(10)
             cookies = await context.cookies()
             cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
         except: 
@@ -172,48 +124,61 @@ async def resolve_any_link(input_url):
 
         return found_url, cookie_str
 
-def process_video(service, file_id, fname, data, batch_str, file_num):
-    # --- FIX 1: UNIFIED NAMING LOGIC ---
-    source_input = file_id
-    original_name = fname # Default name (e.g., "link")
+def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str):
+    print(f"\n--- {desc}: {display_name} ---", flush=True)
+    process = Popen(cmd, stdout=PIPE, stderr=STDOUT, universal_newlines=True, bufsize=1)
+    time_regex = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d+)")
+    last_print_time = 0
     
-    if "#" in source_input:
+    for line in process.stdout:
+        match = time_regex.search(line)
+        if match:
+            current_wall_time = time.time()
+            if current_wall_time - last_print_time > 5:
+                cur_s = time_to_seconds(match.group(1))
+                pct = (cur_s / duration) * 100 if duration > 0 else 0
+                print(f"📦 {batch_str} | {display_name} | {pct:5.1f}% | {match.group(1)} / {seconds_to_hms(duration)}", flush=True)
+                last_print_time = current_wall_time
+                
+    process.wait()
+    if process.returncode != 0:
+        print(f"❌ FFMPEG FAILED on {display_name}", flush=True)
+    return process.returncode == 0
+
+def process_video(service, file_id, fname, data, batch_str, file_num):
+    source_input = file_id
+    original_name = fname 
+    
+    # Handle the ## filename correctly
+    if "##" in source_input:
         source_input, original_name = source_input.split("##", 1)
 
     display_name = f"File {file_num}"
-    temp_in = "temp_in.mp4"
-    final_out = "final_out.mp4"
-    
-    # Ensure extension is consistent
+    temp_in = f"temp_{file_num}.mp4"
+    final_out = f"final_{file_num}.mp4"
     output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
 
-    # --- 2. RESUME CHECK ---
     q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
     check = service.files().list(q=q).execute().get('files', [])
     if check:
         print(f"⏩ SKIPPING: {display_name} (Exists)", flush=True)
-        return f"⏩ SKIPPED: {display_name}", True
+        return f"⏩ SKIPPED", True
 
-    # --- 3. DOWNLOAD / GRAB LOGIC ---
     if source_input.startswith("http"):
-        print(f"🕵️ Resolving Link: {source_input}...", flush=True)
+        print(f"🕵️ Resolving: {display_name}...", flush=True)
         resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
         
         if not resolved_link:
             return f"❌ FAILED: No stream found", False
 
-        print(f"📥 Downloading Resolved Stream...", flush=True)
-        
-        # Build strict headers for Gofile
         UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        headers = f"Referer: {source_input}\r\n"
-        headers += f"User-Agent: {UA}\r\n"
+        headers = f"Referer: {source_input}\r\nUser-Agent: {UA}\r\n"
         if session_cookies:
             headers += f"Cookie: {session_cookies}\r\n"
 
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1', # Anti-drop flags
+            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
             '-headers', headers,
             '-i', resolved_link,
             '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
@@ -227,15 +192,13 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
             done = False
             while not done: _, done = downloader.next_chunk()
     
-    # --- FIX 2: VALIDATE DOWNLOAD BEFORE PROBING ---
-    if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 1000:
-        print(f"❌ FAILED: Download for {display_name} resulted in missing or empty file.", flush=True)
-        return f"❌ FAILED: {display_name}", False
+    if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 10000:
+        return f"❌ FAILED: File empty", False
 
-    # Metadata
-    probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
-    src_h = int(probe[0]) if probe[0] else 720
-    fps_parts = probe[1].split('/')
+    # Probing and Processing
+    probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
+    src_h = int(probe_out[0]) if probe_out[0] else 720
+    fps_parts = probe_out[1].split('/')
     src_fps = float(fps_parts[0])/float(fps_parts[1]) if len(fps_parts)==2 else 30.0
     total_dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip())
     src_size = os.path.getsize(temp_in) / (1024*1024)
@@ -261,11 +224,9 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     if src_fps > 30.5: vf_base += ",fps=fps=30"
 
     segment_files = []
-    # --- START MULTI-SEGMENT LOOP ---
     for i, (start, dur) in enumerate(segments):
-        seg_out = f"seg_{i}.mp4"
+        seg_out = f"seg_{file_num}_{i}.mp4"
         is_last = (i == len(segments) - 1)
-        
         if mode == 'T':
             cmd = ['ffmpeg', '-hide_banner', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', seg_out]
         else:
@@ -280,67 +241,45 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         run_ffmpeg_process(cmd, dur, display_name, target_size_mb, f"Segment {i}", batch_str)
         segment_files.append(seg_out)
 
-    # Concat segments
     if len(segment_files) > 1:
-        with open("list.txt", "w") as f:
+        with open(f"list_{file_num}.txt", "w") as f:
             for s in segment_files: f.write(f"file '{s}'\n")
-        subprocess.run(['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', '-movflags', '+faststart', final_out])
+        subprocess.run(['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', f"list_{file_num}.txt", '-c', 'copy', '-movflags', '+faststart', final_out])
         for s in segment_files: os.remove(s)
-        os.remove("list.txt")
+        os.remove(f"list_{file_num}.txt")
     else:
         os.rename(segment_files[0], final_out)
 
-    # Upload
-    # Upload to Drive with Resumable Retry Logic
-    print(f"Uploading {display_name}...", flush=True)
     media = MediaFileUpload(final_out, mimetype='video/mp4', resumable=True)
-    request = service.files().create(
-        body={'name': output_name, 'parents': [OUTPUT_FOLDER_ID]},
-        media_body=media
-    )
+    request = service.files().create(body={'name': output_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
     
     response = None
     while response is None:
-        try:
-            status, response = request.next_chunk()
-            if status:
-                print(f"Upload Progress: {int(status.progress() * 100)}%", flush=True)
-        except Exception as e:
-            print(f"⚠️ Upload connection flickered: {e}. Retrying...", flush=True)
-            time.sleep(5) # Wait 5 seconds and try the chunk again
-    print(f"DONE: {display_name}\n", flush=True)
+        try: status, response = request.next_chunk()
+        except: time.sleep(5)
+
     if os.path.exists(temp_in): os.remove(temp_in)
     if os.path.exists(final_out): os.remove(final_out)
-    return f"✅ SUCCESS [{mode}]: {display_name}", True
+    return f"✅ SUCCESS: {display_name}", True
 
 if __name__ == "__main__":
     service = get_drive_service()
     fh = io.BytesIO()
     MediaIoBaseDownload(fh, service.files().get_media(fileId=CONFIG_FILE_ID)).next_chunk()
-    
     config_lines = fh.getvalue().decode().splitlines()
-    batch_history = []
     
     file_count = 0
     for line in config_lines:
         line = line.strip()
         if not line or line.startswith('#'): continue
-        
         parts = [p.strip() for p in line.split('---') if p.strip()]
         if len(parts) >= 3:
             file_count += 1
-            source_val = parts[0] # This is your Link or Drive ID
+            source_val = parts[0]
             mode_val = parts[1].upper()
             fade = parts[-1].upper() == 'F'
             times = parts[2:-1] if fade else parts[2:]
-            
-            # Create the data package for the process_video function
             data = {'mode': mode_val, 'times': times, 'fade': fade}
-            
-            print(f"\n--- Processing Entry {file_count} ---")
-            # We pass 'source_val' as both the ID and the name for now
-            msg, success = process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
-            batch_history.append(msg)
+            process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
 
-    print("\n✅ ALL ENTRIES IN CONFIG PROCESSED.", flush=True)
     sys.exit(0)
