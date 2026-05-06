@@ -191,8 +191,8 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
     check = service.files().list(q=q).execute().get('files', [])
     if check:
-        print(f"⏩ SKIPPING: {output_name} (Exists)", flush=True)
-        return f"⏩ SKIPPED: {output_name}", True
+        print(f"⏩ SKIPPING: {display_name} (Exists)", flush=True)
+        return f"⏩ SKIPPED: {display_name}", True
 
     # --- 3. DOWNLOAD / GRAB LOGIC ---
     if source_input.startswith("http"):
