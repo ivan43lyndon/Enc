@@ -178,7 +178,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     original_name = fname # Default name (e.g., "link")
     
     if "#" in source_input:
-        source_input, original_name = source_input.split("#", 1)
+        source_input, original_name = source_input.split("##", 1)
 
     display_name = f"File {file_num}"
     temp_in = "temp_in.mp4"
