@@ -268,23 +268,35 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     return f"✅ SUCCESS: {display_name}", True
 
 if __name__ == "__main__":
-    service = get_drive_service()
-    fh = io.BytesIO()
-    MediaIoBaseDownload(fh, service.files().get_media(fileId=CONFIG_FILE_ID)).next_chunk()
-    config_lines = fh.getvalue().decode().splitlines()
-    
-    file_count = 0
-    for line in config_lines:
-        line = line.strip()
-        if not line or line.startswith('#'): continue
-        parts = [p.strip() for p in line.split('---') if p.strip()]
-        if len(parts) >= 3:
-            file_count += 1
-            source_val = parts[0]
-            mode_val = parts[1].upper()
-            fade = parts[-1].upper() == 'F'
-            times = parts[2:-1] if fade else parts[2:]
-            data = {'mode': mode_val, 'times': times, 'fade': fade}
-            process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
+    try:
+        service = get_drive_service()
+        fh = io.BytesIO()
+        MediaIoBaseDownload(fh, service.files().get_media(fileId=CONFIG_FILE_ID)).next_chunk()
+        config_lines = fh.getvalue().decode().splitlines()
+        
+        file_count = 0
+        for line in config_lines:
+            line = line.strip()
+            if not line or line.startswith('#'): continue
+            parts = [p.strip() for p in line.split('---') if p.strip()]
+            if len(parts) >= 3:
+                file_count += 1
+                source_val = parts[0]
+                mode_val = parts[1].upper()
+                fade = parts[-1].upper() == 'F'
+                times = parts[2:-1] if fade else parts[2:]
+                data = {'mode': mode_val, 'times': times, 'fade': fade}
+                
+                # Wrap the video processing in a retry/exit logic
+                try:
+                    process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
+                except Exception as e:
+                    print(f"⚠️ Process Error: {e}")
+                    sys.exit(99) # Exit to trigger resume/restart
 
-    sys.exit(0)
+        print("\n✅ ALL ENTRIES PROCESSED.", flush=True)
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"💥 Critical Connection Error: {e}")
+        sys.exit(99) # Trigger restart for SSL/Network issues
