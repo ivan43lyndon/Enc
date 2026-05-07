@@ -195,7 +195,9 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         with io.FileIO(temp_in, 'wb') as fh:
             downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024*10)
             done = False
-            while not done: _, done = downloader.next_chunk()
+            while not done:
+                status, done = downloader.next_chunk()
+                if status: print(f"📥 {display_name} | Download: {int(status.progress()*100)}%", flush=True)
     
     if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 10000:
         return f"❌ FAILED: File empty", False
