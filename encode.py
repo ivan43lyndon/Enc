@@ -199,6 +199,8 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     
     if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 10000:
         return f"❌ FAILED: File empty", False
+        
+    print(f"✅ DOWNLOAD COMPLETE: {display_name}", flush=True) 
 
     # Probing and Processing
     probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
@@ -255,17 +257,23 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     else:
         os.rename(segment_files[0], final_out)
 
+    print(f"📤 Uploading: {display_name}...", flush=True)
     media = MediaFileUpload(final_out, mimetype='video/mp4', resumable=True)
     request = service.files().create(body={'name': output_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
-    
     response = None
     while response is None:
-        try: status, response = request.next_chunk()
-        except: time.sleep(5)
+        try:
+            status, response = request.next_chunk()
+            if status:
+                print(f"⬆️ {batch_str} | Upload Progress: {int(status.progress() * 100)}%", flush=True)
+        except Exception as e:
+            print(f"⚠️ Upload flicker: {e}. Retrying...", flush=True)
+            time.sleep(5)
 
+    print(f"✅ UPLOAD COMPLETE: {display_name}\n", flush=True)
     if os.path.exists(temp_in): os.remove(temp_in)
     if os.path.exists(final_out): os.remove(final_out)
-    return f"✅ SUCCESS: {display_name}", True
+    return True
 
 if __name__ == "__main__":
     try:
