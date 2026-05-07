@@ -146,6 +146,11 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
     return process.returncode == 0
 
 def process_video(service, file_id, fname, data, batch_str, file_num):
+    # TIMEOUT CHECK (Triggers sys.exit(99))
+    if time.time() - START_TIME > TIMEOUT_LIMIT:
+        print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
+        sys.exit(99)
+    
     source_input = file_id
     original_name = fname 
     
