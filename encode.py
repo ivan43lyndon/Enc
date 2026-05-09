@@ -168,7 +168,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
     check = service.files().list(q=q, fields="files(id)").execute().get('files', [])
     if check:
-        print(f"⏩ SKIPPING: {display_name}", flush=True) # Generic log
+        print(f"⏩ SKIPPING: {display_name} (Already exists in Output)", flush=True)
         return f"⏩ SKIPPED", True
 
     if source_input.startswith("http"):
