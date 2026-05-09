@@ -146,64 +146,73 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
     return process.returncode == 0
 
 def process_video(service, file_id, fname, data, batch_str, file_num):
-    # 1. IMMEDIATE TIMEOUT CHECK
     if time.time() - START_TIME > TIMEOUT_LIMIT:
-        print("\n⏳ TIMEOUT REACHED.", flush=True)
+        print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
         sys.exit(99)
     
-    # 2. RESOLVE NAMES FROM THE FIRST COLUMN
-    # We ignore the 'fname' argument entirely because it might be "link"
     raw_input = file_id.strip()
     if "##" in raw_input:
-        source_input, name_part = raw_input.split("##", 1)
+        source_input, config_name = raw_input.split("##", 1)
         source_input = source_input.strip()
-        original_name = name_part.strip()
+        original_name = config_name.strip()
     else:
         source_input = raw_input
         original_name = raw_input
 
-    # 3. CLEAN FOR GOOGLE DRIVE (The "Invalid Value" Shield)
-    # Remove hidden newlines and escape single quotes
-    clean_display_name = original_name.replace("'", "") # Hard-strip quotes for display
     output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
-    
-    # THIS IS THE CRITICAL LINE: Escaping for the API query
+    display_name = f"File {file_num}"
+    temp_in = f"temp_{file_num}.mp4"
+    final_out = f"final_{file_num}.mp4"
+
     safe_q_name = output_name.replace("'", "\\'")
 
-    print(f"--- Processing: {output_name} ---", flush=True)
-
-    # 4. THE SKIP CHECK (With Error Protection)
     try:
-        # We build the query manually to ensure it's a clean string
-        check_q = "name = '" + safe_q_name + "' and '" + OUTPUT_FOLDER_ID + "' in parents and trashed = false"
-        check = service.files().list(q=check_q, fields="files(id)").execute().get('files', [])
+        q_check = "name = '" + safe_q_name + "' and '" + OUTPUT_FOLDER_ID + "' in parents and trashed = false"
+        check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
         if check:
-            print(f"⏩ SKIPPING: {output_name} (Exists)", flush=True)
-            return True
+            print(f"⏩ SKIPPING: {display_name} (Already exists)", flush=True)
+            return f"⏩ SKIPPED", True
     except Exception as e:
-        # If it says 'Invalid Value' here, the problem is safe_q_name or FOLDER_ID
-        print(f"❌ API CRASHED AT SKIP CHECK: {e}")
-        print(f"👉 Problematic Query: {check_q}")
+        print(f"❌ Skip Check Error: {e}")
         return False
 
-    # 5. THE SEARCH (For Drive Files)
-    if not source_input.startswith("http"):
+    if source_input.startswith("http"):
+        print(f"🕵️ Resolving: {display_name}...", flush=True)
+        resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
+        
+        if not resolved_link:
+            return f"❌ FAILED: No stream found", False
+
+        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        headers = f"Referer: {source_input}\r\nUser-Agent: {UA}\r\n"
+        if session_cookies:
+            headers += f"Cookie: {session_cookies}\r\n"
+
+        raw_download_cmd = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
+            '-headers', headers,
+            '-i', resolved_link,
+            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
+        ]
+        subprocess.run(raw_download_cmd)
+    else:
         drive_id = None
-        search_q_name = source_input.strip().replace("'", "\\'")
+        search_name = source_input.strip().replace("'", "\\'")
+        
         try:
-            search_q = "name = '" + search_q_name + "' and '" + INPUT_FOLDER_ID + "' in parents and trashed = false"
-            res = service.files().list(q=search_q, fields="files(id)").execute().get('files', [])
+            query = "name = '" + search_name + "' and '" + INPUT_FOLDER_ID + "' in parents and trashed = false"
+            res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
             if res:
                 drive_id = res[0]['id']
         except Exception as e:
-            print(f"❌ API CRASHED AT SEARCH: {e}")
-            return False
+            print(f"❌ Search Error: {e}")
+            pass
 
         if not drive_id:
-            print(f"❌ NOT FOUND IN INPUT: {source_input}")
+            print(f"❌ {display_name} | Error: Not found in Input Folder", flush=True)
             return False
 
-        # --- 4. DOWNLOAD FROM DRIVE ---
         print(f"📥 Downloading: {display_name}...", flush=True)
         try:
             request = service.files().get_media(fileId=drive_id)
@@ -214,8 +223,8 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
                     status, done = downloader.next_chunk()
                     if status: 
                         print(f"📥 {display_name} | Download: {int(status.progress()*100)}%", flush=True)
-        except:
-            print(f"❌ {display_name} | Download Failed", flush=True)
+        except Exception as e:
+            print(f"❌ {display_name} | Download Failed: {e}", flush=True)
             return False
     
     if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 10000:
@@ -223,7 +232,6 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         
     print(f"✅ DOWNLOAD COMPLETE: {display_name}", flush=True) 
 
-    # Probing and Processing
     probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
     src_h = int(probe_out[0]) if probe_out[0] else 720
     fps_parts = probe_out[1].split('/')
