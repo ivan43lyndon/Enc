@@ -194,16 +194,28 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         subprocess.run(raw_download_cmd)
     else:
         drive_id = None
+        # 1. Clean the name and escape single quotes (e.g., Don't -> Don\'t)
         clean_name = source_input.strip()
-        search_name = clean_name.replace("'", "\\'")
+        safe_name = clean_name.replace("'", "\\'")
         
         try:
-            query = f"'{INPUT_FOLDER_ID}' in parents and name = '{search_name}' and trashed = false"
-            res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
+            # 2. Build the query string manually for maximum stability
+            query = "name = '" + safe_name + "' and '" + INPUT_FOLDER_ID + "' in parents and trashed = false"
+            
+            # This print is your best friend right now. 
+            # If "Invalid Value" hits, look at what this line says in your console.
+            print(f"🔍 DRIVE QUERY: {query}", flush=True)
+
+            res = service.files().list(
+                q=query, 
+                fields="files(id)",
+                spaces='drive'
+            ).execute().get('files', [])
             
             if res:
                 drive_id = res[0]['id']
-        except:
+        except Exception as e:
+            print(f"⚠️ Search API Error: {e}", flush=True)
             pass
 
         if not drive_id:
