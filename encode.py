@@ -317,6 +317,7 @@ if __name__ == "__main__":
             if len(parts) >= 3:
                 file_count += 1
                 source_val = parts[0]
+                name_to_pass = source_val
                 mode_val = parts[1].upper()
                 fade = parts[-1].upper() == 'F'
                 times = parts[2:-1] if fade else parts[2:]
@@ -324,7 +325,7 @@ if __name__ == "__main__":
                 
                 # Wrap the video processing in a retry/exit logic
                 try:
-                    process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
+                    process_video(service, source_val, name_to_pass, data, f"[{file_count}]", file_count)
                 except Exception as e:
                     print(f"⚠️ Process Error: {e}")
                     sys.exit(99) # Exit to trigger resume/restart
