@@ -194,32 +194,25 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         subprocess.run(raw_download_cmd)
     else:
         drive_id = None
-        # 1. Clean the name and escape single quotes (e.g., Don't -> Don\'t)
-        clean_name = source_input.strip()
-        safe_name = clean_name.replace("'", "\\'")
-        
-        try:
-            # 2. Build the query string manually for maximum stability
-            query = "name = '" + safe_name + "' and '" + INPUT_FOLDER_ID + "' in parents and trashed = false"
-            
-            # This print is your best friend right now. 
-            # If "Invalid Value" hits, look at what this line says in your console.
-            print(f"🔍 DRIVE QUERY: {query}", flush=True)
+        # This makes the "Dangerous Name" look "Safe" to Google
+        # 1. Strip hidden newlines
+        # 2. Escape single quotes
+        clean_name = source_input.strip().replace("'", "\\'")
 
-            res = service.files().list(
-                q=query, 
-                fields="files(id)",
-                spaces='drive'
-            ).execute().get('files', [])
-            
+        # 3. Use the exact syntax Google wants
+        query = f"name = '{clean_name}' and '{INPUT_FOLDER_ID}' in parents and trashed = false"
+
+        try:
+            res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
             if res:
                 drive_id = res[0]['id']
         except Exception as e:
-            print(f"⚠️ Search API Error: {e}", flush=True)
-            pass
+            # This will tell you EXACTLY why the name is "Invalid"
+            print(f"❌ Google hated this name: {clean_name} | Error: {e}")
+            return False
 
         if not drive_id:
-            print(f"❌ {display_name} | Error: Not found in Input Folder", flush=True)
+            print(f"❌ File not found on Drive: {clean_name}")
             return False
 
         # --- 4. DOWNLOAD FROM DRIVE ---
