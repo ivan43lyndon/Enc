@@ -152,13 +152,14 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         sys.exit(99)
     
     source_input = file_id.strip()
-    original_name = fname.strip()
     
     # Handle the ## filename correctly
     if "##" in source_input:
         source_input, config_name = source_input.split("##", 1)
         source_input = source_input.strip()
         original_name = config_name.strip()
+    else:
+        original_name = source_input.strip()
 
     display_name = f"File {file_num}"
     temp_in = f"temp_{file_num}.mp4"
@@ -317,7 +318,6 @@ if __name__ == "__main__":
             if len(parts) >= 3:
                 file_count += 1
                 source_val = parts[0]
-                name_to_pass = source_val.strip()
                 mode_val = parts[1].upper()
                 fade = parts[-1].upper() == 'F'
                 times = parts[2:-1] if fade else parts[2:]
@@ -325,7 +325,7 @@ if __name__ == "__main__":
                 
                 # Wrap the video processing in a retry/exit logic
                 try:
-                    process_video(service, source_val, name_to_pass, data, f"[{file_count}]", file_count)
+                    process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
                 except Exception as e:
                     print(f"⚠️ Process Error: {e}")
                     sys.exit(99) # Exit to trigger resume/restart
