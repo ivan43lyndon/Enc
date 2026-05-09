@@ -190,31 +190,32 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         ]
         subprocess.run(raw_download_cmd)
     else:
-        # 1. Search (KEEP THIS SILENT)
-        query = f"'{INPUT_FOLDER_ID}' in parents and name = '{source_input}' and trashed = false"
-        search_result = service.files().list(q=query, fields="files(id, name)").execute().get('files', [])
+        try:
+            query = f"'{INPUT_FOLDER_ID}' in parents and name = '{source_input}' and trashed = false"
+            res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
+            if res:
+                drive_id = res[0]['id']
+        except:
+            pass
 
-        if not search_result:
-            drive_id = source_input
-        else:
-            drive_id = search_result[0]['id']
+        if not drive_id:
+            print(f"❌ {display_name} | Error: Name not found in Input Folder", flush=True)
+            return False
 
-        # 2. Download (ONLY SHOW GENERIC NAME)
-        print(f"📥 Downloading: {display_name}...", flush=True) # display_name is "File X"
+        # --- 4. DOWNLOAD FROM DRIVE ---
+        print(f"📥 Downloading: {display_name}...", flush=True)
         try:
             request = service.files().get_media(fileId=drive_id)
             with io.FileIO(temp_in, 'wb') as fh:
-                downloader = MediaIoBaseDownload(fh, request, chunksize=1024*1024*10)
+                downloader = MediaIoBaseDownload(fh, request, chunksize=10*1024*1024)
                 done = False
                 while not done:
                     status, done = downloader.next_chunk()
                     if status: 
-                        # This line only shows "File X | Download: 50%"
                         print(f"📥 {display_name} | Download: {int(status.progress()*100)}%", flush=True)
-        except Exception as e:
-            # We still need to log the error, but we keep the filename out of it
-            print(f"❌ {display_name} | Download Error")
-            return f"❌ FAILED", False
+        except:
+            print(f"❌ {display_name} | Download Failed", flush=True)
+            return False
     
     if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 10000:
         return f"❌ FAILED: File empty", False
