@@ -151,12 +151,14 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
         sys.exit(99)
     
-    source_input = file_id
-    original_name = fname 
+    source_input = file_id.strip()
+    original_name = fname.strip()
     
     # Handle the ## filename correctly
     if "##" in source_input:
-        source_input, original_name = source_input.split("##", 1)
+        source_input, config_name = source_input.split("##", 1)
+        source_input = source_input.strip()
+        original_name = config_name.strip()
 
     display_name = f"File {file_num}"
     temp_in = f"temp_{file_num}.mp4"
@@ -164,9 +166,9 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
 
     q = f"'{OUTPUT_FOLDER_ID}' in parents and name = '{output_name}' and trashed = false"
-    check = service.files().list(q=q).execute().get('files', [])
+    check = service.files().list(q=q, fields="files(id)").execute().get('files', [])
     if check:
-        print(f"⏩ SKIPPING: {display_name} (Exists)", flush=True)
+        print(f"⏩ SKIPPING: {display_name}", flush=True) # Generic log
         return f"⏩ SKIPPED", True
 
     if source_input.startswith("http"):
@@ -191,17 +193,20 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         subprocess.run(raw_download_cmd)
     else:
         drive_id = None
+        clean_name = source_input.strip()
+        search_name = clean_name.replace("'", "\\'")
+        
         try:
-            # We search for the exact string from your config
-            query = f"name = '{source_input}' and trashed = false"
+            query = f"'{INPUT_FOLDER_ID}' in parents and name = '{search_name}' and trashed = false"
             res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
+            
             if res:
                 drive_id = res[0]['id']
         except:
             pass
 
         if not drive_id:
-            print(f"❌ {display_name} | Error: Not found", flush=True)
+            print(f"❌ {display_name} | Error: Not found in Input Folder", flush=True)
             return False
 
         # --- 4. DOWNLOAD FROM DRIVE ---
