@@ -317,7 +317,7 @@ if __name__ == "__main__":
             if len(parts) >= 3:
                 file_count += 1
                 source_val = parts[0]
-                name_to_pass = source_val
+                name_to_pass = source_val.strip()
                 mode_val = parts[1].upper()
                 fade = parts[-1].upper() == 'F'
                 times = parts[2:-1] if fade else parts[2:]
