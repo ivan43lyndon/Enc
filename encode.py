@@ -169,7 +169,6 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         print(f"⏩ SKIPPING: {display_name} (Exists)", flush=True)
         return f"⏩ SKIPPED", True
 
-    drive_id = None
     if source_input.startswith("http"):
         print(f"🕵️ Resolving: {display_name}...", flush=True)
         resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
@@ -191,6 +190,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         ]
         subprocess.run(raw_download_cmd)
     else:
+        drive_id = None
         try:
             query = f"'{INPUT_FOLDER_ID}' in parents and name = '{source_input}' and trashed = false"
             res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
