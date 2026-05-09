@@ -192,7 +192,8 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     else:
         drive_id = None
         try:
-            query = f"'{INPUT_FOLDER_ID}' in parents and name = '{source_input}' and trashed = false"
+            # We search for the exact string from your config
+            query = f"name = '{source_input}' and trashed = false"
             res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
             if res:
                 drive_id = res[0]['id']
@@ -200,7 +201,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
             pass
 
         if not drive_id:
-            print(f"❌ {display_name} | Error: Name not found in Input Folder", flush=True)
+            print(f"❌ {display_name} | Error: Not found", flush=True)
             return False
 
         # --- 4. DOWNLOAD FROM DRIVE ---
