@@ -49,6 +49,12 @@ def get_drive_service():
         client_id=data.get('client_id'),
         client_secret=data.get('client_secret')
     )
+    if not creds.valid:
+        if creds.expired and creds.refresh_token:
+            print("Token expired. Refreshing...")
+            creds.refresh(Request())
+        else:
+            raise Exception("Token is invalid and no refresh token found!")
     
     return build('drive', 'v3', credentials=creds)
 
