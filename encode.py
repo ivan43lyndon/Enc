@@ -75,50 +75,49 @@ def seconds_to_hms(seconds):
 
 # --- UPDATED SNIFFER FOR PIXELDRAIN ---
 async def resolve_any_link(input_url):
-    is_big_three = any(domain in input_url for domain in ["bunkr", "pixeldrain", "gofile"])
-    
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         page = await context.new_page()
         
-        found_url = None
-        found_size = 0
+        # This tracks our candidates
+        hunt = {"master": None, "big_url": None, "big_size": 0}
 
         async def handle_response(response):
-            nonlocal found_url, found_size
-            u = response.url
-            
-            # Specifically catch Pixeldrain API downloads
-            if "pixeldrain.com/api/file/" in u:
-                found_url = u
-                return
+            nonlocal hunt
+            u = response.url.split('?')[0].lower()
+            try:
+                h = response.headers
+                ctype = h.get("content-type", "").lower()
+                size = int(h.get("content-length", 0))
 
-            if is_big_three and any(ext in u.lower() for ext in [".mp4", ".mkv", ".m4v"]):
-                try:
-                    h = response.headers
-                    size = int(h.get("content-length", 0))
-                    if size > 2000000 and size > found_size:
-                        found_size = size
-                        found_url = u
-                except: pass
-            elif ".m3u8" in u and not found_url:
-                found_url = u
+                # Priority 1: Master M3U8
+                if "master" in u and ".m3u8" in u:
+                    hunt["master"] = response.url
+                # Priority 2: Biggest file that isn't an image/script/html
+                elif not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
+                    if size > hunt["big_size"]:
+                        hunt["big_size"] = size
+                        hunt["big_url"] = response.url
+            except: pass
 
         page.on("response", handle_response)
         try:
-            await page.goto(input_url, wait_until="networkidle", timeout=60000)
-            if "pixeldrain.com" in input_url:
-                try: await page.click("text=Download", timeout=5000)
-                except: pass
-            elif is_big_three:
-                await page.mouse.click(960, 540)
+            # Fix Timeout: Use domcontentloaded instead of networkidle
+            try:
+                await page.goto(input_url, wait_until="domcontentloaded", timeout=25000)
+            except: pass # Move on if page is slow
             
-            await asyncio.sleep(10)
+            await asyncio.sleep(4)
+            await page.mouse.click(960, 540) # Wake up the player
+            await asyncio.sleep(8) # Wait for data to flow
+
+            # Pick the best link found
+            final_link = hunt["master"] or hunt["big_url"]
+            
             cookies = await context.cookies()
             cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-        except: 
-            cookie_str = ""
+            return final_link, cookie_str
         finally:
             await browser.close()
 
@@ -157,7 +156,10 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         original_name = config_name.strip()
     else:
         source_input = raw_input
-        original_name = raw_input
+        if source_input.startswith("http"):
+            original_name = f"File_{file_num}"
+        else:
+            original_name = raw_input
 
     output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
     display_name = f"File {file_num}"
@@ -232,12 +234,17 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
         
     print(f"✅ DOWNLOAD COMPLETE: {display_name}", flush=True) 
 
-    probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
-    src_h = int(probe_out[0]) if probe_out[0] else 720
-    fps_parts = probe_out[1].split('/')
-    src_fps = float(fps_parts[0])/float(fps_parts[1]) if len(fps_parts)==2 else 30.0
-    total_dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip())
-    src_size = os.path.getsize(temp_in) / (1024*1024)
+    try:
+        probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
+        src_h = int(probe_out[0]) if probe_out[0] else 720
+        fps_parts = probe_out[1].split('/')
+        src_fps = float(fps_parts[0])/float(fps_parts[1]) if len(fps_parts)==2 else 30.0
+        total_dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip())
+        src_size = os.path.getsize(temp_in) / (1024*1024)
+    except Exception as e:
+        print(f"❌ DATA ERROR: The link resolved to non-video data. Skipping.")
+        if os.path.exists(temp_in): os.remove(temp_in)
+        return False
 
     time_points = data['times']
     mode, do_fade = data['mode'], data['fade']
