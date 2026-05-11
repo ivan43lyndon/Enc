@@ -81,7 +81,7 @@ def seconds_to_hms(seconds):
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
 def upload_final_to_drive(service, local_path, drive_name):
-    print(f"📤 Final Upload: {drive_name}...", flush=True)
+    print(f"📤 Final Upload ", flush=True)
     media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
     request = service.files().create(body={'name': drive_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
     response = None
