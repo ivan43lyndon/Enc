@@ -372,7 +372,16 @@ if __name__ == "__main__":
             if not items: continue
             
             paths = [i['path'] for i in items]
-            final_name = f"Group_{code}.mp4" # You can customize this naming logic
+            first_line = items[0]['line'] 
+            
+            if "##" in first_line:
+                raw_name = first_line.split("##", 1)[1].split("---")[0].strip()
+            else:
+                raw_name = f"Group_{code}"
+            if not raw_name.lower().endswith(".mp4"):
+                raw_name += ".mp4"
+            
+            final_name = raw_name
             
             if len(paths) > 1:
                 print(f"\n🔗 Concatenating Group CT{code} ({len(paths)} files)...")
