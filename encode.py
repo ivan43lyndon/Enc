@@ -193,7 +193,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             return f"⏩ SKIPPED", True
     except Exception as e:
         print(f"❌ Skip Check Error: {e}")
-        return False
+        return None, False
 
     if source_input.startswith("http"):
         print(f"🕵️ Resolving: {display_name}...", flush=True)
@@ -230,7 +230,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
         if not drive_id:
             print(f"❌ {display_name} | Error: Not found in Input Folder", flush=True)
-            return False
+            return None, False
 
         print(f"📥 Downloading: {display_name}...", flush=True)
         try:
@@ -244,7 +244,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                         print(f"📥 {display_name} | Download: {int(status.progress()*100)}%", flush=True)
         except Exception as e:
             print(f"❌ {display_name} | Download Failed: {e}", flush=True)
-            return False
+            return None, False
     
     if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 10000:
         return f"❌ FAILED: File empty", False
@@ -261,7 +261,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     except Exception as e:
         print(f"❌ DATA ERROR: The link resolved to non-video data. Skipping.")
         if os.path.exists(temp_in): os.remove(temp_in)
-        return False
+        return None, False
 
     time_points = data['times']
     mode, do_fade = data['mode'], data['fade']
@@ -356,7 +356,11 @@ if __name__ == "__main__":
                     if p.upper().startswith('CT'):
                         ct_code = p[2:].strip()
                         break
-                times = [p for p in parts[2:] if p.upper() != 'F' and not p.upper().startswith('CT')]
+                times = []
+                for p in parts[2:]:
+                    p_up = p.upper()
+                    if p_up != 'F' and not p_up.startswith('CT'):
+                        times.append(p)
                 data = {'mode': mode_val, 'times': times, 'fade': fade}
                 
                 # Wrap the video processing in a retry/exit logic
@@ -367,6 +371,8 @@ if __name__ == "__main__":
                         ct_groups[ct_code].append({'path': local_file, 'line': line})
                 except Exception as e:
                     print(f"⚠️ Process Error: {e}")
+                    import traceback
+                    traceback.print_exc()
                     sys.exit(99) # Exit to trigger resume/restart
         for code, items in ct_groups.items():
             if not items: continue
@@ -392,7 +398,7 @@ if __name__ == "__main__":
                     for p in paths: f.write(f"file '{p}'\n")
                 
                 final_out = f"final_ct_{code}.mp4"
-                subprocess.run(['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', final_out])
+                subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
                 
                 # Upload the merged file
                 upload_final_to_drive(service, final_out, final_name)
