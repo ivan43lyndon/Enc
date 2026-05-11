@@ -79,6 +79,16 @@ def seconds_to_hms(seconds):
     s = int(seconds)
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
+def upload_final_to_drive(service, local_path, drive_name):
+    print(f"📤 Final Upload: {drive_name}...", flush=True)
+    media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
+    request = service.files().create(body={'name': drive_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
+    response = None
+    while response is None:
+        status, response = request.next_chunk()
+        if status:
+            print(f"⬆️ Upload Progress: {int(status.progress() * 100)}%", flush=True)
+
 # --- UPDATED SNIFFER FOR PIXELDRAIN ---
 async def resolve_any_link(input_url):
     async with async_playwright() as p:
@@ -150,7 +160,7 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
         print(f"❌ FFMPEG FAILED on {display_name}", flush=True)
     return process.returncode == 0
 
-def process_video(service, file_id, fname, data, batch_str, file_num):
+def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False):
     if time.time() - START_TIME > TIMEOUT_LIMIT:
         print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
         sys.exit(99)
@@ -299,6 +309,10 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     else:
         os.rename(segment_files[0], final_out)
 
+    if hold_upload:
+        print(f"📦 HOLDING: {display_name} for concatenation (CT tag).", flush=True)
+        if os.path.exists(temp_in): os.remove(temp_in)
+        return final_out, False
     print(f"📤 Uploading: {display_name}...", flush=True)
     media = MediaFileUpload(final_out, mimetype='video/mp4', resumable=True)
     request = service.files().create(body={'name': output_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
@@ -315,9 +329,10 @@ def process_video(service, file_id, fname, data, batch_str, file_num):
     print(f"✅ UPLOAD COMPLETE: {display_name}\n", flush=True)
     if os.path.exists(temp_in): os.remove(temp_in)
     if os.path.exists(final_out): os.remove(final_out)
-    return True
+    return None, False
 
 if __name__ == "__main__":
+    from collections import defaultdict
     try:
         service = get_drive_service()
         fh = io.BytesIO()
@@ -325,6 +340,7 @@ if __name__ == "__main__":
         config_lines = fh.getvalue().decode().splitlines()
         
         file_count = 0
+        ct_groups = defaultdict(list)
         for line in config_lines:
             line = line.strip()
             if not line or line.startswith('#'): continue
@@ -333,17 +349,53 @@ if __name__ == "__main__":
                 file_count += 1
                 source_val = parts[0]
                 mode_val = parts[1].upper()
-                fade = parts[-1].upper() == 'F'
-                times = parts[2:-1] if fade else parts[2:]
+                fade = any(p.upper() == 'F' for p in parts)
+                ct_code = None
+                for p in parts:
+                    if p.upper().startswith('CT'):
+                        ct_code = p[2:].strip()
+                        break
+                times = [p for p in parts[2:] if p.upper() != 'F' and not p.upper().startswith('CT')]
                 data = {'mode': mode_val, 'times': times, 'fade': fade}
                 
                 # Wrap the video processing in a retry/exit logic
                 try:
-                    process_video(service, source_val, "link", data, f"[{file_count}]", file_count)
+                    local_file, was_skipped = process_video(service, source_val, "link", data, f"[{file_count}]", file_count, hold_upload=bool(ct_code))
+                    
+                    if ct_code and not was_skipped:
+                        ct_groups[ct_code].append({'path': local_file, 'line': line})
                 except Exception as e:
                     print(f"⚠️ Process Error: {e}")
                     sys.exit(99) # Exit to trigger resume/restart
-
+        for code, items in ct_groups.items():
+            if not items: continue
+            
+            paths = [i['path'] for i in items]
+            final_name = f"Group_{code}.mp4" # You can customize this naming logic
+            
+            if len(paths) > 1:
+                print(f"\n🔗 Concatenating Group CT{code} ({len(paths)} files)...")
+                # Create concat list
+                list_file = f"list_ct_{code}.txt"
+                with open(list_file, 'w') as f:
+                    for p in paths: f.write(f"file '{p}'\n")
+                
+                final_out = f"final_ct_{code}.mp4"
+                subprocess.run(['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', final_out])
+                
+                # Upload the merged file
+                upload_final_to_drive(service, final_out, final_name)
+                
+                # Cleanup
+                for p in paths: 
+                    if os.path.exists(p): os.remove(p)
+                os.remove(list_file)
+                os.remove(final_out)
+            else:
+                # Only one video had this code
+                upload_final_to_drive(service, paths[0], items[0]['path'])
+                if os.path.exists(paths[0]): os.remove(paths[0])
+                    
         print("\n✅ ALL ENTRIES PROCESSED.", flush=True)
         sys.exit(0)
 
