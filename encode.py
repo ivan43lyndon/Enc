@@ -372,12 +372,13 @@ if __name__ == "__main__":
             if not items: continue
             
             paths = [i['path'] for i in items]
-            first_line = items[0]['line'] 
+            first_line = items[0]['line']
+            clean_part = first_line.split("---")[0].strip()
             
-            if "##" in first_line:
-                raw_name = first_line.split("##", 1)[1].split("---")[0].strip()
+            if "##" in clean_part:
+                raw_name = clean_part.split("##")[1].strip()
             else:
-                raw_name = f"Group_{code}"
+                raw_name = clean_part
             if not raw_name.lower().endswith(".mp4"):
                 raw_name += ".mp4"
             
