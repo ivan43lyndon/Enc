@@ -12,6 +12,7 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.credentials import Credentials as UserCredentials
 import asyncio
 from playwright.async_api import async_playwright
+from google.auth.transport.requests import Request
 
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
@@ -393,6 +394,7 @@ if __name__ == "__main__":
                 os.remove(final_out)
             else:
                 # Only one video had this code
+                print(f"📦 Only 1 file for CT{code}. Uploading normally.", flush=True)
                 upload_final_to_drive(service, paths[0], items[0]['path'])
                 if os.path.exists(paths[0]): os.remove(paths[0])
                     
