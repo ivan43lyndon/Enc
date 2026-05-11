@@ -288,10 +288,10 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         seg_out = f"seg_{file_num}_{i}.mp4"
         is_last = (i == len(segments) - 1)
         if mode == 'T':
-            cmd = ['ffmpeg', '-hide_banner', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', seg_out]
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', seg_out]
         else:
             vf = vf_base
-            cmd = ['ffmpeg', '-hide_banner', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
             if do_fade and is_last:
                 cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             else:
@@ -304,7 +304,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     if len(segment_files) > 1:
         with open(f"list_{file_num}.txt", "w") as f:
             for s in segment_files: f.write(f"file '{s}'\n")
-        subprocess.run(['ffmpeg', '-hide_banner', '-y', '-f', 'concat', '-safe', '0', '-i', f"list_{file_num}.txt", '-c', 'copy', '-movflags', '+faststart', final_out])
+        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', f"list_{file_num}.txt", '-c', 'copy', '-movflags', '+faststart', final_out])
         for s in segment_files: os.remove(s)
         os.remove(f"list_{file_num}.txt")
     else:
