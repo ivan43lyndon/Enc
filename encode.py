@@ -161,19 +161,16 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
         print(f"❌ FFMPEG FAILED on {display_name}", flush=True)
     return process.returncode == 0
 
-def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, force_process=False):
+def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False):
 
-    if not force_process:
-        # Stubborn Skip Check with Retries
-        for attempt in range(1, 4):
-            try:
-                q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
-                check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
-                if check:
-                    return None, True # True means was_skipped
-                break 
-            except Exception as e:
-                time.sleep(2)
+    if not skip_api_check:
+        try:
+            q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
+            check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
+            if check:
+                return None, True
+        except Exception as e:
+            print(f"⚠️ Skip Check API Error: {e}")
     
     if time.time() - START_TIME > TIMEOUT_LIMIT:
         print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
@@ -397,26 +394,37 @@ if __name__ == "__main__":
                 print(f"⏩ AUTOMATICALLY SKIPPING: entry [{file_count}] because Group CT{ct_code} was marked skipped.", flush=True)
                 continue
 
-            is_first_of_group = ct_code and len(ct_groups[ct_code]) == 0
-            is_standalone = ct_code is None
+            is_part_of_group = ct_code is not None
+            is_first_part = is_part_of_group and len(ct_groups[ct_code]) == 0
             
-            force_process = False
-            if ct_code and not is_first_of_group:
-                force_process = True
+            should_call_drive = (not is_part_of_group) or is_first_part
             
             data = {'mode': entry['mode'], 'times': entry['times'], 'fade': entry['fade']}
             
             try:
-                local_file, was_skipped = process_video(
-                    service, entry['source'], "link", data, 
-                    f"[{file_count}]", file_count, hold_upload=bool(ct_code),force_process=force_process
-                )
-                
-                if was_skipped:
-                    if ct_code:
-                        print(f"🛑 Group CT{ct_code} broken by a skipped file. Adding to cascade-skip pool.")
+                if should_call_drive:
+                    # Normal behavior: check Drive, then download/encode
+                    local_file, was_skipped = process_video(
+                        service, entry['source'], "link", data, 
+                        f"[{file_count}]", file_count, hold_upload=is_part_of_group
+                    )
+                    
+                    if was_skipped and is_part_of_group:
+                        print(f"✅ GROUP CT{ct_code} already exists. Skipping all parts.")
                         skipped_ct_tags.add(ct_code)
-                    continue
+                        continue
+                else:
+                    # BLOCKOUT MODE: We already know Part 1 was missing, 
+                    # so DO NOT call process_video's skip check. 
+                    # We run the encoding logic directly.
+                    print(f"🛠️  CT PART {len(ct_groups[ct_code])+1}/{ct_total_counts[ct_code]}: Encoding locally (No API check)...")
+                    
+                    # Call process_video with a new 'skip_api_check' flag we will add
+                    local_file, was_skipped = process_video(
+                        service, entry['source'], "link", data, 
+                        f"[{file_count}]", file_count, hold_upload=True, 
+                        skip_api_check=True 
+                    )
                 
                 if ct_code and local_file:
                     ct_groups[ct_code].append({'path': local_file, 'line': entry['line']})
