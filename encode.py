@@ -332,7 +332,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         try:
             status, response = request.next_chunk()
             if status:
-                print(f"⬆️ {batch_str} | Upload Progress: {int(status.progress() * 100)}%", flush=True)
+                print(f"⬆️ {display_name} | Uploading: {int(status.progress() * 100)}%", end='\r', flush=True)
         except Exception as e:
             print(f"⚠️ Upload flicker: {e}. Retrying...", flush=True)
             time.sleep(5)
