@@ -321,7 +321,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         os.rename(segment_files[0], final_out)
 
     if hold_upload:
-        print(f"📦 HOLDING: {display_name} for concatenation (CT tag).", flush=True)
+        print(f"📦 HOLDING: {display_name} | Group CT{ct_code} (Part {current_part} of {total_parts}).", flush=True)
         if os.path.exists(temp_in): os.remove(temp_in)
         return final_out, False
     print(f"📤 Uploading: {display_name}...", flush=True)
