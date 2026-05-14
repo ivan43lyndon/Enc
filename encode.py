@@ -162,6 +162,17 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
 
 def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False, ct_code=None, current_part=0, total_parts=0):
 
+    raw_input = file_id.strip()
+    if "##" in raw_input:
+        source_input, config_name = raw_input.split("##", 1)
+        source_input = source_input.strip()
+        original_name = config_name.strip()
+    else:
+        source_input = raw_input
+        if source_input.startswith("http"):
+            original_name = f"File_{file_num}"
+        else:
+            original_name = raw_input
     output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
     display_name = f"File {file_num}"
     temp_in = f"temp_{file_num}.mp4"
@@ -189,29 +200,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     
     if time.time() - START_TIME > TIMEOUT_LIMIT:
         print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
-        sys.exit(99)
-    
-    raw_input = file_id.strip()
-    if "##" in raw_input:
-        source_input, config_name = raw_input.split("##", 1)
-        source_input = source_input.strip()
-        original_name = config_name.strip()
-    else:
-        source_input = raw_input
-        if source_input.startswith("http"):
-            original_name = f"File_{file_num}"
-        else:
-            original_name = raw_input
-
-    try:
-        q_check = "name = '" + safe_q_name + "' and '" + OUTPUT_FOLDER_ID + "' in parents and trashed = false"
-        check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
-        if check:
-            print(f"⏩ SKIPPING: {display_name} (Already exists)", flush=True)
-            return f"⏩ SKIPPED", True
-    except Exception as e:
-        print(f"❌ Skip Check Error: {e}")
-        return None, False
+        sys.exit(99) 
 
     if source_input.startswith("http"):
         print(f"🕵️ Resolving: {display_name}...", flush=True)
