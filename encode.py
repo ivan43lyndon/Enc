@@ -150,7 +150,7 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
         match = time_regex.search(line)
         if match:
             current_wall_time = time.time()
-            if current_wall_time - last_print_time > 5:
+            if current_wall_time - last_print_time > 1:
                 cur_s = time_to_seconds(match.group(1))
                 pct = (cur_s / duration) * 100 if duration > 0 else 0
                 print(f"📦 {batch_str} | {display_name} | {pct:5.1f}% | {match.group(1)} / {seconds_to_hms(duration)}", flush=True)
