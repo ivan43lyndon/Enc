@@ -162,14 +162,30 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
 
 def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False, ct_code=None, current_part=0, total_parts=0):
 
+    output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
+    display_name = f"File {file_num}"
+    temp_in = f"temp_{file_num}.mp4"
+    final_out = f"final_{file_num}.mp4"
+
+    safe_q_name = output_name.replace("'", "\\'")
+    
     if not skip_api_check:
         try:
-            q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
-            check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
-            if check:
-                return None, True
+            for attempt in range(5):
+                try:
+                    q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
+                    check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
+                    if check:
+                        print(f"⏩ SKIPPING: {display_name} (Already exists)", flush=True)
+                        return f"⏩ SKIPPED", True
+                    break 
+                except Exception as e:
+                    if "EOF" in str(e) and attempt < 2:
+                        time.sleep(2)
+                        continue
+                    raise e
         except Exception as e:
-            print(f"⚠️ Skip Check API Error: {e}")
+            print(f"⚠️ Skip Check API Error for {safe_q_name}: {e}")
     
     if time.time() - START_TIME > TIMEOUT_LIMIT:
         print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
@@ -186,13 +202,6 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             original_name = f"File_{file_num}"
         else:
             original_name = raw_input
-
-    output_name = original_name if original_name.lower().endswith(".mp4") else f"{original_name}.mp4"
-    display_name = f"File {file_num}"
-    temp_in = f"temp_{file_num}.mp4"
-    final_out = f"final_{file_num}.mp4"
-
-    safe_q_name = output_name.replace("'", "\\'")
 
     try:
         q_check = "name = '" + safe_q_name + "' and '" + OUTPUT_FOLDER_ID + "' in parents and trashed = false"
