@@ -249,7 +249,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     if not os.path.exists(temp_in) or os.path.getsize(temp_in) < 10000:
         return f"❌ FAILED: File empty", False
         
-    print(f"✅ DOWNLOAD COMPLETE: {display_name}", flush=True) 
+    print(f"💾 DOWNLOAD COMPLETE: {display_name}", flush=True) 
 
     try:
         probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
@@ -327,7 +327,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             print(f"⚠️ Upload flicker: {e}. Retrying...", flush=True)
             time.sleep(5)
 
-    print(f"✅ UPLOAD COMPLETE: {display_name}\n", flush=True)
+    print(f"🚀 SINGLE FILE UPLOAD COMPLETE: {display_name}\n", flush=True)
     if os.path.exists(temp_in): os.remove(temp_in)
     if os.path.exists(final_out): os.remove(final_out)
     return None, False
@@ -429,7 +429,7 @@ if __name__ == "__main__":
                         raw_name += ".mp4"
                     
                     if len(paths) > 1:
-                        print(f"\n🔗 Concatenating Group CT{ct_code} ({len(paths)} files) immediately...")
+                        print(f"\n🧲 CONCATENATING GROUP CT{ct_code} ({len(paths)} files) NOW...")
                         list_file = f"list_ct_{ct_code}.txt"
                         with open(list_file, 'w') as f:
                             for p in paths: f.write(f"file '{p}'\n")
@@ -438,6 +438,7 @@ if __name__ == "__main__":
                         subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
                         
                         upload_final_to_drive(service, final_out, raw_name)
+                        print(f"🏆 MERGED GROUP CT{ct_code} UPLOAD COMPLETE!\n", flush=True)
                         
                         for p in paths: 
                             if os.path.exists(p): os.remove(p)
@@ -446,6 +447,7 @@ if __name__ == "__main__":
                     else:
                         print(f"📦 Only 1 file for CT{ct_code}. Uploading normally.", flush=True)
                         upload_final_to_drive(service, paths[0], raw_name)
+                        print(f"🚀 SINGLE CT FILE UPLOAD COMPLETE!\n", flush=True)
                         if os.path.exists(paths[0]): os.remove(paths[0])
                     
                     del ct_groups[ct_code]
