@@ -339,84 +339,121 @@ if __name__ == "__main__":
         fh = io.BytesIO()
         MediaIoBaseDownload(fh, service.files().get_media(fileId=CONFIG_FILE_ID)).next_chunk()
         config_lines = fh.getvalue().decode().splitlines()
-        
+
         file_count = 0
         ct_groups = defaultdict(list)
+        parsed_entries = []       
+        ct_total_counts = defaultdict(int)  
+        skipped_ct_tags = set()
+
         for line in config_lines:
-            line = line.strip()
-            if not line or line.startswith('#'): continue
-            parts = [p.strip() for p in line.split('---') if p.strip()]
+            line_str = line.strip()
+            if not line_str or line_str.startswith('#'): continue
+            parts = [p.strip() for p in line_str.split('---') if p.strip()]
             if len(parts) >= 3:
-                file_count += 1
                 source_val = parts[0]
                 mode_val = parts[1].upper()
                 fade = any(p.upper() == 'F' for p in parts)
+                
                 ct_code = None
                 for p in parts:
                     if p.upper().startswith('CT'):
                         ct_code = p[2:].strip()
                         break
-                times = []
-                for p in parts[2:]:
-                    p_up = p.upper()
-                    if p_up != 'F' and not p_up.startswith('CT'):
-                        times.append(p)
-                data = {'mode': mode_val, 'times': times, 'fade': fade}
+                        
+                times = [p for p in parts[2:] if p.upper() != 'F' and not p.upper().startswith('CT')]
                 
-                # Wrap the video processing in a retry/exit logic
-                try:
-                    local_file, was_skipped = process_video(service, source_val, "link", data, f"[{file_count}]", file_count, hold_upload=bool(ct_code))
+                entry = {
+                    'line': line_str,
+                    'source': source_val,
+                    'mode': mode_val,
+                    'fade': fade,
+                    'ct_code': ct_code,
+                    'times': times
+                }
+                parsed_entries.append(entry)
+                if ct_code:
+                    ct_total_counts[ct_code] += 1
+
+        for idx, entry in enumerate(parsed_entries):
+            file_count += 1
+            ct_code = entry['ct_code']
+            
+            # Cascade Skip Check
+            if ct_code and ct_code in skipped_ct_tags:
+                print(f"⏩ AUTOMATICALLY SKIPPING: entry [{file_count}] because Group CT{ct_code} was marked skipped.", flush=True)
+                continue
+
+            data = {'mode': entry['mode'], 'times': entry['times'], 'fade': entry['fade']}
+            
+            try:
+                local_file, was_skipped = process_video(
+                    service, entry['source'], "link", data, 
+                    f"[{file_count}]", file_count, hold_upload=bool(ct_code)
+                )
+                
+                if was_skipped:
+                    if ct_code:
+                        print(f"🛑 Group CT{ct_code} broken by a skipped file. Adding to cascade-skip pool.")
+                        skipped_ct_tags.add(ct_code)
+                        for item in ct_groups[ct_code]:
+                            if os.path.exists(item['path']): os.remove(item['path'])
+                        del ct_groups[ct_code]
+                    continue
+                
+                if ct_code and local_file:
+                    ct_groups[ct_code].append({'path': local_file, 'line': entry['line']})
                     
-                    if ct_code and not was_skipped:
-                        ct_groups[ct_code].append({'path': local_file, 'line': line})
-                except Exception as e:
-                    print(f"⚠️ Process Error: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    sys.exit(99) # Exit to trigger resume/restart
-        for code, items in ct_groups.items():
-            if not items: continue
-            
-            paths = [i['path'] for i in items]
-            first_line = items[0]['line']
-            clean_part = first_line.split("---")[0].strip()
-            
-            if "##" in clean_part:
-                raw_name = clean_part.split("##")[1].strip()
-            else:
-                raw_name = clean_part
-            if not raw_name.lower().endswith(".mp4"):
-                raw_name += ".mp4"
-            
-            final_name = raw_name
-            
-            if len(paths) > 1:
-                print(f"\n🔗 Concatenating Group CT{code} ({len(paths)} files)...")
-                # Create concat list
-                list_file = f"list_ct_{code}.txt"
-                with open(list_file, 'w') as f:
-                    for p in paths: f.write(f"file '{p}'\n")
+            except Exception as e:
+                print(f"⚠️ Process Error: {e}")
+                import traceback
+                traceback.print_exc()
+                sys.exit(99)
                 
-                final_out = f"final_ct_{code}.mp4"
-                subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
+            # Real-Time Instant Concatenation Check
+            if ct_code and ct_code in ct_groups:
+                current_count = len(ct_groups[ct_code])
+                target_count = ct_total_counts[ct_code]
                 
-                # Upload the merged file
-                upload_final_to_drive(service, final_out, final_name)
-                
-                # Cleanup
-                for p in paths: 
-                    if os.path.exists(p): os.remove(p)
-                os.remove(list_file)
-                os.remove(final_out)
-            else:
-                # Only one video had this code
-                print(f"📦 Only 1 file for CT{code}. Uploading normally.", flush=True)
-                upload_final_to_drive(service, paths[0], items[0]['path'])
-                if os.path.exists(paths[0]): os.remove(paths[0])
+                if current_count == target_count:
+                    items = ct_groups[ct_code]
+                    paths = [i['path'] for i in items]
+                    first_line = items[0]['line']
+                    clean_part = first_line.split("---")[0].strip()
                     
+                    if "##" in clean_part:
+                        raw_name = clean_part.split("##")[1].strip()
+                    else:
+                        raw_name = clean_part
+                    if not raw_name.lower().endswith(".mp4"):
+                        raw_name += ".mp4"
+                    
+                    if len(paths) > 1:
+                        print(f"\n🔗 Concatenating Group CT{ct_code} ({len(paths)} files) immediately...")
+                        list_file = f"list_ct_{ct_code}.txt"
+                        with open(list_file, 'w') as f:
+                            for p in paths: f.write(f"file '{p}'\n")
+                        
+                        final_out = f"final_ct_{ct_code}.mp4"
+                        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
+                        
+                        upload_final_to_drive(service, final_out, raw_name)
+                        
+                        for p in paths: 
+                            if os.path.exists(p): os.remove(p)
+                        if os.path.exists(list_file): os.remove(list_file)
+                        if os.path.exists(final_out): os.remove(final_out)
+                    else:
+                        print(f"📦 Only 1 file for CT{ct_code}. Uploading normally.", flush=True)
+                        upload_final_to_drive(service, paths[0], raw_name)
+                        if os.path.exists(paths[0]): os.remove(paths[0])
+                    
+                    del ct_groups[ct_code]
+        
         print("\n✅ ALL ENTRIES PROCESSED.", flush=True)
         sys.exit(0)
 
     except Exception as e:
         print(f"💥 Critical Connection Error: {e}")
-        sys.exit(99) # Trigger restart for SSL/Network issues
+        sys.exit(99)
+        
