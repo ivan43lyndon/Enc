@@ -161,7 +161,20 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
         print(f"❌ FFMPEG FAILED on {display_name}", flush=True)
     return process.returncode == 0
 
-def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False):
+def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, force_process=False):
+
+    if not force_process:
+        # Stubborn Skip Check with Retries
+        for attempt in range(1, 4):
+            try:
+                q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
+                check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
+                if check:
+                    return None, True # True means was_skipped
+                break 
+            except Exception as e:
+                time.sleep(2)
+    
     if time.time() - START_TIME > TIMEOUT_LIMIT:
         print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
         sys.exit(99)
@@ -384,21 +397,25 @@ if __name__ == "__main__":
                 print(f"⏩ AUTOMATICALLY SKIPPING: entry [{file_count}] because Group CT{ct_code} was marked skipped.", flush=True)
                 continue
 
+            is_first_of_group = ct_code and len(ct_groups[ct_code]) == 0
+            is_standalone = ct_code is None
+            
+            force_process = False
+            if ct_code and not is_first_of_group:
+                force_process = True
+            
             data = {'mode': entry['mode'], 'times': entry['times'], 'fade': entry['fade']}
             
             try:
                 local_file, was_skipped = process_video(
                     service, entry['source'], "link", data, 
-                    f"[{file_count}]", file_count, hold_upload=bool(ct_code)
+                    f"[{file_count}]", file_count, hold_upload=bool(ct_code),force_process=force_process
                 )
                 
                 if was_skipped:
                     if ct_code:
                         print(f"🛑 Group CT{ct_code} broken by a skipped file. Adding to cascade-skip pool.")
                         skipped_ct_tags.add(ct_code)
-                        for item in ct_groups[ct_code]:
-                            if os.path.exists(item['path']): os.remove(item['path'])
-                        del ct_groups[ct_code]
                     continue
                 
                 if ct_code and local_file:
