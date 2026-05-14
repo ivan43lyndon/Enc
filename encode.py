@@ -90,7 +90,6 @@ def upload_final_to_drive(service, local_path, drive_name):
         if status:
             print(f"⬆️ Upload Progress: {int(status.progress() * 100)}%", flush=True)
 
-# --- UPDATED SNIFFER FOR PIXELDRAIN ---
 async def resolve_any_link(input_url):
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
@@ -161,7 +160,7 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
         print(f"❌ FFMPEG FAILED on {display_name}", flush=True)
     return process.returncode == 0
 
-def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False):
+def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False, ct_code=None, current_part=0, total_parts=0):
 
     if not skip_api_check:
         try:
@@ -321,7 +320,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         os.rename(segment_files[0], final_out)
 
     if hold_upload:
-        print(f"📦 HOLDING: {display_name} for concatenation (CT tag).", flush=True)
+        print(f"📦 HOLDING: {display_name} | Group CT{ct_code} (Part {current_part} of {total_parts})", flush=True)
         if os.path.exists(temp_in): os.remove(temp_in)
         return final_out, False
     print(f"📤 Uploading: {display_name}...", flush=True)
@@ -406,7 +405,9 @@ if __name__ == "__main__":
                     # Normal behavior: check Drive, then download/encode
                     local_file, was_skipped = process_video(
                         service, entry['source'], "link", data, 
-                        f"[{file_count}]", file_count, hold_upload=is_part_of_group
+                        f"[{file_count}]", file_count, hold_upload=is_part_of_group, ct_code=ct_code, 
+                        current_part=len(ct_groups[ct_code]) + 1 if ct_code else 0,
+                        total_parts=ct_total_counts[ct_code] if ct_code else 0
                     )
                     
                     if was_skipped and is_part_of_group:
@@ -423,7 +424,9 @@ if __name__ == "__main__":
                     local_file, was_skipped = process_video(
                         service, entry['source'], "link", data, 
                         f"[{file_count}]", file_count, hold_upload=True, 
-                        skip_api_check=True 
+                        skip_api_check=True, ct_code=ct_code,
+                        current_part=len(ct_groups[ct_code]) + 1,
+                        total_parts=ct_total_counts[ct_code] 
                     )
                 
                 if ct_code and local_file:
