@@ -255,12 +255,14 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
                     page.on("response", handle_response)
                     try:
-                        # Request navigation without blocking purely on DOM states
+                        # Monitor the network layer directly
+                        api_promise = page.wait_for_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000)
+                        
+                        # Navigate and immediately catch incoming files
                         await page.goto(folder_url, wait_until="commit", timeout=30000)
                         
-                        # Use multi-selector fallbacks to verify the list structure is ready
-                        await page.wait_for_selector("#filesContent, .filesContainer, .mainContentContent", timeout=25000)
-                        await asyncio.sleep(4)
+                        await api_promise
+                        await asyncio.sleep(2) 
                         
                         cookies = await context.cookies()
                         session_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
