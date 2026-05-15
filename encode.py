@@ -82,13 +82,32 @@ def seconds_to_hms(seconds):
 
 def upload_final_to_drive(service, local_path, drive_name):
     print(f"📤 Final Upload ", flush=True)
-    media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
-    request = service.files().create(body={'name': drive_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
-    response = None
-    while response is None:
-        status, response = request.next_chunk()
-        if status:
-            print(f"⬆️ Upload Progress: {int(status.progress() * 100)}%", flush=True)
+    mmax_retries = 5
+    for attempt in range(1, max_retries + 1):
+        try:
+            media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
+            request = service.files().create(
+                body={'name': drive_name, 'parents': [OUTPUT_FOLDER_ID]}, 
+                media_body=media
+            )
+            
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    print(f"⬆️ Upload Progress: {int(status.progress() * 100)}%", flush=True)
+            
+            print(f"🚀 UPLOAD SUCCESSFUL on attempt {attempt}!", flush=True)
+            return True # Successfully uploaded
+            
+        except Exception as e:
+            print(f"⚠️ Upload attempt {attempt}/{max_retries} failed: {e}", flush=True)
+            if attempt == max_retries:
+                raise e # Out of retries, bubble up the error
+            
+            wait_time = attempt * 10  # 10s, 20s, 30s, 40s...
+            print(f"⏳ Waiting {wait_time} seconds before retrying...", flush=True)
+            time.sleep(wait_time)
 
 async def resolve_any_link(input_url):
     async with async_playwright() as p:
@@ -463,13 +482,18 @@ if __name__ == "__main__":
                         final_out = f"final_ct_{ct_code}.mp4"
                         subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
                         
-                        upload_final_to_drive(service, final_out, raw_name)
-                        print(f"🏆 MERGED GROUP CT{ct_code} UPLOAD COMPLETE!\n", flush=True)
-                        
-                        for p in paths: 
-                            if os.path.exists(p): os.remove(p)
-                        if os.path.exists(list_file): os.remove(list_file)
-                        if os.path.exists(final_out): os.remove(final_out)
+                        try:
+                            upload_final_to_drive(service, final_out, raw_name)
+                            print(f"🏆 MERGED GROUP CT{ct_code} UPLOAD COMPLETE!\n", flush=True)
+                            for p in paths: 
+                                if os.path.exists(p): os.remove(p)
+                            if os.path.exists(list_file): os.remove(list_file)
+                            if os.path.exists(final_out): os.remove(final_out)
+                            del ct_groups[ct_code]
+                        except Exception as upload_err:
+                            print(f"❌ FATAL: Group CT{ct_code} merged but completely failed to upload after all retries: {upload_err}")
+                            print("⚠️ Preserving local segments to avoid losing work! Exiting safely for workflow resume.", flush=True)
+                            sys.exit(99)
                     else:
                         print(f"📦 Only 1 file for CT{ct_code}. Uploading normally.", flush=True)
                         upload_final_to_drive(service, paths[0], raw_name)
