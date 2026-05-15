@@ -255,13 +255,10 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
                     page.on("response", handle_response)
                     try:
-                        # Monitor the network layer directly
-                        api_promise = page.wait_for_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000)
+                        # Correct Python syntax: context manager expects response while executing goto
+                        async with page.expect_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000):
+                            await page.goto(folder_url, wait_until="commit", timeout=30000)
                         
-                        # Navigate and immediately catch incoming files
-                        await page.goto(folder_url, wait_until="commit", timeout=30000)
-                        
-                        await api_promise
                         await asyncio.sleep(2) 
                         
                         cookies = await context.cookies()
