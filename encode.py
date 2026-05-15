@@ -222,16 +222,73 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         sys.exit(99) 
 
     if source_input.startswith("http"):
-        print(f"🕵️ Resolving: {display_name}...", flush=True)
-        resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
+        print(f"🕵️ Analyzing web source: {display_name}...", flush=True)
         
-        if not resolved_link:
-            return f"❌ FAILED: No stream found", False
+        bracket_match = re.match(r"(.+?)\[(\d+)\]$", source_input)
+        
+        if bracket_match:
+            folder_url = bracket_match.group(1)
+            target_index = int(bracket_match.group(2)) - 1  
+            
+            print(f"📁 Folder parameter detected. Locating file index [{target_index + 1}]...", flush=True)
+            file_list = []
+            session_cookies = ""
+            
+            async def scrape_folder():
+                nonlocal session_cookies
+                fl = []
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+                    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                    page = await context.new_page()
+                    
+                    async def handle_response(resp):
+                        if "api.gofile.io/contents" in resp.url:
+                            try:
+                                data = json.loads(await resp.text())
+                                if data.get("status") == "ok":
+                                    children = data.get("data", {}).get("children", {})
+                                    for item in children.values():
+                                        if item.get("type") == "file":
+                                            fl.append({"name": item.get("name"), "link": item.get("link")})
+                            except: pass
 
-        UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        headers = f"Referer: {source_input}\r\nUser-Agent: {UA}\r\n"
-        if session_cookies:
-            headers += f"Cookie: {session_cookies}\r\n"
+                    page.on("response", handle_response)
+                    try:
+                        await page.goto(folder_url, wait_until="domcontentloaded", timeout=25000)
+                        await page.wait_for_selector(".mainContentContent", timeout=20000)
+                        await asyncio.sleep(3)
+                        cookies = await context.cookies()
+                        session_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                    finally:
+                        await browser.close()
+                
+                fl.sort(key=lambda x: x["name"].lower())  
+                return fl
+
+            file_list = asyncio.run(scrape_folder())
+            
+            if not file_list:
+                return f"❌ FAILED: Folder contents empty or inaccessible", False
+            if target_index >= len(file_list):
+                return f"❌ FAILED: Requested index [{target_index + 1}], but directory only contains {len(file_list)} files", False
+                
+            selected_file = file_list[target_index]
+            resolved_link = selected_file["link"]
+            print(f"🎯 Match found! Index [{target_index + 1}] -> {selected_file['name']}", flush=True)
+            
+            headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+            if session_cookies:
+                headers += f"Cookie: {session_cookies}\r\n"
+
+        else:
+            resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
+            if not resolved_link:
+                return f"❌ FAILED: No stream found", False
+
+            headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+            if session_cookies:
+                headers += f"Cookie: {session_cookies}\r\n"
 
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
@@ -241,7 +298,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
         ]
         subprocess.run(raw_download_cmd)
-    else:
+    elif not source_input.startswith("http"):
         drive_id = None
         search_name = source_input.strip().replace("'", "\\'")
         
