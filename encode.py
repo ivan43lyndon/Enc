@@ -17,7 +17,7 @@ from google.auth.transport.requests import Request
 
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
-TIMEOUT_LIMIT = 20000  # 5 hours and 33 minutes (safe buffer)
+TIMEOUT_LIMIT = 20000 # 5 hours and 33 minutes (safe buffer)
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 
