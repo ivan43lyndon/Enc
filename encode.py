@@ -278,7 +278,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                 
             selected_file = file_list[target_index]
             resolved_link = selected_file["link"]
-            print(f"🎯 Match found! Index [{target_index + 1}] -> {selected_file['name']}", flush=True)
+            print(f"🎯 Match found! Slot -> [{display_name}] | Index: [{target_index + 1}]", flush=True)
             
             headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
             if session_cookies:
