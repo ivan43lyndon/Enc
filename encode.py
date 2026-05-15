@@ -228,7 +228,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         
         if bracket_match:
             folder_url = bracket_match.group(1)
-            target_index = int(bracket_match.group(2))  - 1
+            target_index = int(bracket_match.group(2)) - 1
             
             print(f"📁 Folder parameter detected. Locating file index [{target_index + 1}]...", flush=True)
             file_list = []
