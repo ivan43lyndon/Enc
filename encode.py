@@ -228,9 +228,9 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         
         if bracket_match:
             folder_url = bracket_match.group(1)
-            target_index = int(bracket_match.group(2))  
+            target_index = int(bracket_match.group(2))  - 1
             
-            print(f"📁 Folder parameter detected. Locating file index [{target_index}]...", flush=True)
+            print(f"📁 Folder parameter detected. Locating file index [{target_index + 1}]...", flush=True)
             file_list = []
             session_cookies = ""
             
@@ -274,11 +274,16 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             if not file_list:
                 return f"❌ FAILED: Folder contents empty or inaccessible", False
             if target_index >= len(file_list):
-                return f"❌ FAILED: Requested index [{target_index + 1}], but directory only contains {len(file_list)} files", False
+                return f"❌ FAILED: Requested index [{target_index}], but directory only contains {len(file_list)} files", False
                 
-            selected_file = file_list[target_index]
+            actual_python_index = target_index 
+            
+            if actual_python_index >= len(file_list) or actual_python_index < 0:
+                return f"❌ FAILED: Requested file number [{target_index + 1}], but directory only contains {len(file_list)} files", False
+                
+            selected_file = file_list[actual_python_index]
             resolved_link = selected_file["link"]
-            print(f"🎯 Match found! Slot -> [{display_name}] | Index: [{target_index + 1}]", flush=True)
+            print(f"🎯 Match found! Slot -> [{display_name}] | Index: [{target_index}]", flush=True)
             
             headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
             if session_cookies:
@@ -342,7 +347,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         src_h = int(probe_out[0]) if probe_out[0] else 720
         fps_parts = probe_out[1].split('/')
         src_fps = float(fps_parts[0])/float(fps_parts[1]) if len(fps_parts)==2 else 30.0
-        total_dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip())
+        total_dur = float(subprocess.run(['ffprobe', '-v', 'error', '-find_stream_info', '-analyze_duration', '2147483647', '-probesize', '2147483647', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip())
         src_size = os.path.getsize(temp_in) / (1024*1024)
     except Exception as e:
         print(f"❌ DATA ERROR: The link resolved to non-video data. Skipping.")
