@@ -550,7 +550,6 @@ if __name__ == "__main__":
                             print(f"🏆 MERGED GROUP CT{ct_code} UPLOAD COMPLETE!\n", flush=True)
                             for p in paths: 
                                 if os.path.exists(p): os.remove(p)
-                            if os.path.exists(list_file): os.remove(list_file)
                             if os.path.exists(final_out): os.remove(final_out)
                             del ct_groups[ct_code]
                         except Exception as upload_err:
