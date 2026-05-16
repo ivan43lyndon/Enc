@@ -83,7 +83,7 @@ def seconds_to_hms(seconds):
 
 def upload_final_to_drive(service, local_path, drive_name):
     print(f"📤 Final Upload ", flush=True)
-    mmax_retries = 5
+    max_retries = 5
     for attempt in range(1, max_retries + 1):
         try:
             media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
