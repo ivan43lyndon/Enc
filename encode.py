@@ -532,13 +532,19 @@ if __name__ == "__main__":
                     
                     if len(paths) > 1:
                         print(f"\n🧲 CONCATENATING GROUP CT{ct_code} ({len(paths)} files) NOW...")
-                        list_file = f"list_ct_{ct_code}.txt"
-                        with open(list_file, 'w') as f:
-                            for p in paths: f.write(f"file '{p}'\n")
+                        ts_paths = []
+                        for idx, p in enumerate(paths):
+                            ts_out = f"temp_split_{ct_code}_{idx}.ts"
+                            subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', p, '-c', 'copy', '-bsf:v', 'h264_mp4toannexb', '-f', 'mpegts', ts_out])
+                            ts_paths.append(ts_out)
                         
+                        concat_string = "concat:" + "|".join(ts_paths)
                         final_out = f"final_ct_{ct_code}.mp4"
                         
-                        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
+                        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', concat_string, '-c', 'copy', '-absf', 'aac_adtstoasc', '-movflags', '+faststart', final_out])
+                        
+                        for ts_p in ts_paths:
+                            if os.path.exists(ts_p): os.remove(ts_p)
                         try:
                             upload_final_to_drive(service, final_out, raw_name)
                             print(f"🏆 MERGED GROUP CT{ct_code} UPLOAD COMPLETE!\n", flush=True)
