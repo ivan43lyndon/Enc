@@ -494,12 +494,8 @@ if __name__ == "__main__":
                         skipped_ct_tags.add(ct_code)
                         continue
                 else:
-                    # BLOCKOUT MODE: We already know Part 1 was missing, 
-                    # so DO NOT call process_video's skip check. 
-                    # We run the encoding logic directly.
                     print(f"🛠️  CT PART {len(ct_groups[ct_code])+1}/{ct_total_counts[ct_code]}: Encoding locally (No API check)...")
                     
-                    # Call process_video with a new 'skip_api_check' flag we will add
                     local_file, was_skipped = process_video(
                         service, entry['source'], "link", data, 
                         f"[{file_count}]", file_count, hold_upload=True, 
@@ -517,7 +513,6 @@ if __name__ == "__main__":
                 traceback.print_exc()
                 sys.exit(99)
                 
-            # Real-Time Instant Concatenation Check
             if ct_code and ct_code in ct_groups:
                 current_count = len(ct_groups[ct_code])
                 target_count = ct_total_counts[ct_code]
@@ -542,7 +537,7 @@ if __name__ == "__main__":
                             for p in paths: f.write(f"file '{p}'\n")
                         
                         final_out = f"final_ct_{ct_code}.mp4"
-                        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
+                        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-async', '1', '-fflags', '+genpts+igndts','-i', list_file, '-c', 'copy', '-movflags', '+faststart', final_out])
                         
                         try:
                             upload_final_to_drive(service, final_out, raw_name)
