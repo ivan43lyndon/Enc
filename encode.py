@@ -381,7 +381,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-fflags', '+genpts', '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
             
             if do_fade and is_last:
-                cmd += ['-af', f"aresample=async=1,f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+                cmd += ['-af', f"aresample=async=1",f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             else:
                 cmd += ['-af', 'aresample=async=1', '-c:a', 'aac', '-b:a', '96k']
             cmd += [seg_out]
