@@ -299,7 +299,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
             '-headers', headers,
             '-i', resolved_link,
-            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
+            '-c', 'copy', '-bsf:a', 'aac_adtstoasc','-avoid_negative_ts', 'make_zero', '-movflags', 'faststart', temp_in
         ]
         subprocess.run(raw_download_cmd)
     elif not source_input.startswith("http"):
@@ -532,31 +532,13 @@ if __name__ == "__main__":
                     
                     if len(paths) > 1:
                         print(f"\n🧲 CONCATENATING GROUP CT{ct_code} ({len(paths)} files) NOW...")
+                        list_file = f"list_ct_{ct_code}.txt"
+                        with open(list_file, 'w') as f:
+                            for p in paths: f.write(f"file '{p}'\n")
+                        
                         final_out = f"final_ct_{ct_code}.mp4"
-
-                        concat_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y']
-                        for p in paths:
-                            concat_cmd += ['-i', p]
-                            
-                        filter_str = ""
-                        for i in range(len(paths)):
-                            filter_str += f"[{i}:v][%d:a]" % i
-                        filter_str += f"concat=n={len(paths)}:v=1:a=1[outv][outa]"
-
-                        concat_cmd += [
-                            '-filter_complex', filter_str,
-                            '-map', '[outv]',
-                            '-map', '[outa]',
-                            '-c:v', 'libx264', 
-                            '-preset', 'ultrafast', 
-                            '-crf', '22', 
-                            '-c:a', 'aac', 
-                            '-b:a', '96k',
-                            '-movflags', '+faststart',
-                            final_out
-                            ]
-
-                        subprocess.run(concat_cmd)
+                        
+                        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', list_file, '-c', 'copy', '-fflags', '+genpts', '-movflags', '+faststart', final_out])
                         try:
                             upload_final_to_drive(service, final_out, raw_name)
                             print(f"🏆 MERGED GROUP CT{ct_code} UPLOAD COMPLETE!\n", flush=True)
