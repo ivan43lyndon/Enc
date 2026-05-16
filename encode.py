@@ -99,14 +99,14 @@ def upload_final_to_drive(service, local_path, drive_name):
                     print(f"⬆️ Upload Progress: {int(status.progress() * 100)}%", flush=True)
             
             print(f"🚀 UPLOAD SUCCESSFUL on attempt {attempt}!", flush=True)
-            return True # Successfully uploaded
+            return True 
             
         except Exception as e:
             print(f"⚠️ Upload attempt {attempt}/{max_retries} failed: {e}", flush=True)
             if attempt == max_retries:
-                raise e # Out of retries, bubble up the error
+                raise e 
             
-            wait_time = attempt * 10  # 10s, 20s, 30s, 40s...
+            wait_time = attempt * 10
             print(f"⏳ Waiting {wait_time} seconds before retrying...", flush=True)
             time.sleep(wait_time)
 
@@ -560,8 +560,6 @@ if __name__ == "__main__":
                         upload_final_to_drive(service, paths[0], raw_name)
                         print(f"🚀 SINGLE CT FILE UPLOAD COMPLETE!\n", flush=True)
                         if os.path.exists(paths[0]): os.remove(paths[0])
-                    
-                    del ct_groups[ct_code]
         
         print("\n✅ ALL ENTRIES PROCESSED.", flush=True)
         sys.exit(0)
