@@ -375,14 +375,15 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         seg_out = f"seg_{file_num}_{i}.mp4"
         is_last = (i == len(segments) - 1)
         if mode == 'T':
-            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', seg_out]
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', '-fflags', '+genpts', '-async', '1', '-bsf:a', 'aac_adtstoasc',seg_out]
         else:
             vf = vf_base
-            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-fflags', '+genpts', '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
+            
             if do_fade and is_last:
-                cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+                cmd += ['-af', f"aresample=async=1,f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             else:
-                cmd += ['-c:a', 'aac', '-b:a', '96k']
+                cmd += ['-af', 'aresample=async=1', '-c:a', 'aac', '-b:a', '96k']
             cmd += [seg_out]
         
         run_ffmpeg_process(cmd, dur, display_name, target_size_mb, f"Segment {i}", batch_str)
