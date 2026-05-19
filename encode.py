@@ -375,7 +375,6 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                 print(f"[-] Error details: {result.stderr.strip()}")
                 
                 if attempt < max_retries:
-                    import time
                     print("[*] Waiting 3 seconds before requesting a fresh connection...")
                     time.sleep(3)
                 else:
