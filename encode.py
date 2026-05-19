@@ -23,14 +23,54 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 # --- CONFIG (From Secrets) ---
 DRIVE_TOKEN = os.environ.get('DRIVE_TOKEN')
+TARGET_EMAIL = os.environ.get('TARGET_EMAIL')
 INPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd'
 OUTPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
 CONFIG_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
+
+if not all([DRIVE_TOKEN, TARGET_EMAIL]):
+    print("❌ Critical Error: Missing DRIVE_TOKEN or TARGET_EMAIL secret environment variable!")
+    sys.exit(1)
 
 TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 TARGET_CRF_VALUE = 22
 FADE_DURATION = 1
+
+def request_ownership_transfer(service, file_id):
+    """
+    Safely initiates an ownership transfer request using the TARGET_EMAIL environment secret.
+    """
+    # Grab the secret target email
+    target_email = os.environ.get('TARGET_EMAIL')
+    
+    if not target_email:
+        print("⚠️ Transfer skipped: TARGET_EMAIL secret variable is not configured.", flush=True)
+        return False
+
+    print("📧 Sending automated ownership transfer invitation...", flush=True)
+    try:
+        permission_body = {
+            'type': 'user',
+            'role': 'writer',       # Must be a writer first to accept ownership
+            'emailAddress': target_email,
+            'pendingOwner': True    # Sets up the pending request state for consumer accounts
+        }
+        
+        service.permissions().create(
+            fileId=file_id,
+            body=permission_body,
+            transferOwnership=True, # Signals to the API that this is an ownership transfer
+            fields="id"
+        ).execute()
+        
+        print("✅ Transfer request sent out successfully!", flush=True)
+        return True
+        
+    except Exception:
+        # Generic error message to prevent Google API from leaking the email address in logs
+        print("⚠️ Permission API request failed.", flush=True)
+        return False
 
 def get_drive_service():
     raw = DRIVE_TOKEN.strip()
@@ -416,6 +456,13 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             time.sleep(5)
 
     print(f"🚀 SINGLE FILE UPLOAD COMPLETE: {display_name}\n", flush=True)
+    try:
+        q_find = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
+        uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
+        if uploaded_files:
+            request_ownership_transfer(service, uploaded_files[0]['id'])
+    except Exception as e:
+        print(f"⚠️ Could not initiate transfer for single file: {e}", flush=True)
     if os.path.exists(temp_in): os.remove(temp_in)
     if os.path.exists(final_out): os.remove(final_out)
     return None, False
@@ -548,6 +595,14 @@ if __name__ == "__main__":
                         try:
                             upload_final_to_drive(service, final_out, raw_name)
                             print(f"🏆 MERGED GROUP CT{ct_code} UPLOAD COMPLETE!\n", flush=True)
+                            try:
+                                safe_raw_name = raw_name.replace("'", "\\'")
+                                q_find = f"name = '{safe_raw_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
+                                uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
+                                if uploaded_files:
+                                    request_ownership_transfer(service, uploaded_files[0]['id'])
+                            except Exception as e:
+                                print(f"⚠️ Could not initiate transfer for group file: {e}", flush=True)
                             for p in paths: 
                                 if os.path.exists(p): os.remove(p)
                             if os.path.exists(final_out): os.remove(final_out)
@@ -560,6 +615,14 @@ if __name__ == "__main__":
                         print(f"📦 Only 1 file for CT{ct_code}. Uploading normally.", flush=True)
                         upload_final_to_drive(service, paths[0], raw_name)
                         print(f"🚀 SINGLE CT FILE UPLOAD COMPLETE!\n", flush=True)
+                        try:
+                            safe_raw_name = raw_name.replace("'", "\\'")
+                            q_find = f"name = '{safe_raw_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
+                            uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
+                            if uploaded_files:
+                                request_ownership_transfer(service, uploaded_files[0]['id'])
+                        except Exception as e:
+                            print(f"⚠️ Could not initiate transfer for single CT file: {e}", flush=True)
                         if os.path.exists(paths[0]): os.remove(paths[0])
         
         print("\n✅ ALL ENTRIES PROCESSED.", flush=True)
