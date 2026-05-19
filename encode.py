@@ -351,7 +351,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             '-reconnect', '1', 
             '-reconnect_at_eof', '1', 
             '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5', 
+            '-reconnect_delay_max', '5',
             '-err_detect', 'ignore_err', 
             '-headers', headers,
             '-i', resolved_link,
@@ -360,7 +360,25 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             '-movflags', 'faststart', 
             temp_in
         ]
-        subprocess.run(raw_download_cmd)
+
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            # Run with check=True so Python knows if FFmpeg crashed
+            result = subprocess.run(raw_download_cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Download succeeded perfectly
+                break
+            else:
+                print(f"[-] FFmpeg encountered a network drop (Attempt {attempt}/{max_retries}).")
+                print(f"[-] Error details: {result.stderr.strip()}")
+                
+                if attempt < max_retries:
+                    import time
+                    print("[*] Waiting 3 seconds before requesting a fresh connection...")
+                    time.sleep(3)
+                else:
+                    print("[!] Max retries reached. Skipping this video or handling the failure.")
     elif not source_input.startswith("http"):
         drive_id = None
         search_name = source_input.strip().replace("'", "\\'")
