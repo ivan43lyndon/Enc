@@ -62,15 +62,36 @@ def format_time(seconds):
 
 def get_video_metadata(video_path):
     try:
+        # Request data in clean JSON format to prevent string split crashes
         cmd = [
-            'ffprobe', '-v', 'error', 
-            '-show_entries', 'format=duration,size:stream=width,height', 
-            '-of', 'csv=p=0', video_path
+            'ffprobe', '-v', 'error',
+            '-select_streams', 'v:0', # Target ONLY the first video stream
+            '-show_entries', 'format=duration,size:stream=width,height',
+            '-of', 'json', video_path
         ]
-        out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip().split('\n')
-        width, height = map(int, out[0].split(','))
-        duration, size_bytes = map(float, out[1].split(','))
-        return {"width": width, "height": height, "duration": duration, "size_mb": size_bytes / (1024 * 1024)}
+        out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
+        data = json.loads(out)
+        
+        # Safely extract metrics with default fallbacks
+        stream = data.get('streams', [{}])[0]
+        fmt = data.get('format', {})
+        
+        width = int(stream.get('width', 1920))
+        height = int(stream.get('height', 1080))
+        duration = float(fmt.get('duration', 0.0))
+        size_bytes = float(fmt.get('size', 0.0))
+        
+        # Fallback if duration is missing from format header (common in some MKVs)
+        if duration == 0.0 and 'duration' in stream:
+            try: duration = float(stream['duration'])
+            except: pass
+
+        return {
+            "width": width, 
+            "height": height, 
+            "duration": duration, 
+            "size_mb": size_bytes / (1024 * 1024)
+        }
     except Exception as e:
         print(f"❌ Error probing metadata: {e}")
         return None
@@ -151,7 +172,7 @@ if __name__ == "__main__":
             if not video_name or video_name.startswith('#'): continue
             
             file_count += 1
-            display_name = f"File [{file_count}] -> {video_name}"
+            display_name = f"File [{file_count}]"
             print(f"\n========================================")
             print(f"🎬 Processing: {display_name}", flush=True)
 
