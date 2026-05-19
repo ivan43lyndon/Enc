@@ -167,15 +167,14 @@ if __name__ == "__main__":
         file_count = 0
 
         for line in config_lines:
-            video_name = line.strip()
             if "---" in line:
                 left_side = line.split("---")[0].strip()
                 if "##" in left_side:
-                    filename = left_side.split("##")[1].strip()
+                    video_name = left_side.split("##")[1].strip()
                 else:
-                    filename = left_side
+                    video_name = left_side
             else:
-                filename = line
+                video_name = line.strip()
             if not video_name or video_name.startswith('#'): continue
             print(video_name)
             
