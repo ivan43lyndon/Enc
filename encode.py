@@ -180,44 +180,59 @@ async def resolve_any_link(input_url):
             nonlocal hunt
             u = response.url.split('?')[0].lower()
             try:
+                # Catch ANY m3u8 link just in case "master" isn't in the filename
+                if ".m3u8" in u:
+                    if "master" in u or not hunt["master"]:
+                        hunt["master"] = response.url
+                        return
+
                 h = response.headers
                 ctype = h.get("content-type", "").lower()
                 size = int(h.get("content-length", 0))
 
-                # Priority 1: Master M3U8
-                if "master" in u and ".m3u8" in u:
-                    hunt["master"] = response.url
                 # Priority 2: Biggest file that isn't an image/script/html
-                elif not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
+                if not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
                     if size > hunt["big_size"]:
                         hunt["big_size"] = size
                         hunt["big_url"] = response.url
-            except: pass
+            except: 
+                pass
 
         page.on("response", handle_response)
+        
         try:
-            # Fix Timeout: Use domcontentloaded instead of networkidle
-            try:
-                await page.goto(input_url, wait_until="domcontentloaded", timeout=25000)
-            except: pass # Move on if page is slow
-            
-            await asyncio.sleep(4)
-            try:
-                await page.click("video", timeout=5000)
-            except:
-                await page.mouse.click(960, 540)
-            await asyncio.sleep(8) # Wait for data to flow
+            # We put the navigation steps in an inner function so we can track its time
+            async def run_browser_steps():
+                try:
+                    await page.goto(input_url, wait_until="domcontentloaded", timeout=15000)
+                except: 
+                    pass # Move on if page loading hooks hang
+                
+                await asyncio.sleep(4)
+                try:
+                    await page.click("video", timeout=4000)
+                except:
+                    await page.mouse.click(960, 540)
+                
+                await asyncio.sleep(6) # Give network data a moment to trigger loops
 
-            # Pick the best link found
+            # Force the logic above to break after a strict 25.0 second max limit
+            try:
+                await asyncio.wait_for(run_browser_steps(), timeout=25.0)
+            except asyncio.TimeoutError:
+                print("[-] Web analysis took too long. Forcing step cutoff to process gathered links...")
+
+            # Pick the best link found (even if the timer cut us off early)
             final_link = hunt["master"] or hunt["big_url"]
             
             cookies = await context.cookies()
             cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+            
             return final_link, cookie_str
+            
         finally:
+            # Ensures browser context files and sockets clear completely
             await browser.close()
-
-        return found_url, cookie_str
 
 def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str):
     print(f"\n--- {desc}: {display_name} ---", flush=True)
