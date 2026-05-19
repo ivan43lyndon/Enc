@@ -348,10 +348,17 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
+            '-reconnect', '1', 
+            '-reconnect_at_eof', '1', 
+            '-reconnect_streamed', '1',
+            '-reconnect_delay_max', '5', 
+            '-err_detect', 'ignore_err', 
             '-headers', headers,
             '-i', resolved_link,
-            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
+            '-c', 'copy', 
+            '-bsf:a', 'aac_adtstoasc', 
+            '-movflags', 'faststart', 
+            temp_in
         ]
         subprocess.run(raw_download_cmd)
     elif not source_input.startswith("http"):
