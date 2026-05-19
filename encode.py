@@ -170,70 +170,77 @@ def upload_final_to_drive(service, local_path, drive_name):
             time.sleep(wait_time)
 
 async def resolve_any_link(input_url):
+    print("[DEBUG 1] Entering resolve_any_link function...")
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+        print("[DEBUG 2] Playwright initialized context wrapper. Attempting to launch Chromium...")
+        
+        try:
+            browser = await p.chromium.launch(
+                headless=True, 
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
+            )
+            print("[DEBUG 3] Chromium launched successfully!")
+        except Exception as launch_err:
+            print(f"[DEBUG CRASH] Chromium failed to launch immediately: {launch_err}")
+            return None, ""
+
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         page = await context.new_page()
+        print("[DEBUG 4] Browser tab context created.")
         
-        # This tracks our candidates
         hunt = {"master": None, "big_url": None, "big_size": 0}
 
         async def handle_response(response):
             nonlocal hunt
             u = response.url.split('?')[0].lower()
             try:
-                # Catch ANY m3u8 link just in case "master" isn't in the filename
                 if ".m3u8" in u:
                     if "master" in u or not hunt["master"]:
                         hunt["master"] = response.url
                         return
-
                 h = response.headers
                 ctype = h.get("content-type", "").lower()
                 size = int(h.get("content-length", 0))
-
-                # Priority 2: Biggest file that isn't an image/script/html
                 if not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
                     if size > hunt["big_size"]:
                         hunt["big_size"] = size
                         hunt["big_url"] = response.url
-            except: 
-                pass
+            except: pass
 
         page.on("response", handle_response)
         
         try:
-            # We put the navigation steps in an inner function so we can track its time
             async def run_browser_steps():
+                print("[DEBUG 5] Navigation routine started. Visiting URL...")
                 try:
                     await page.goto(input_url, wait_until="domcontentloaded", timeout=15000)
-                except: 
-                    pass # Move on if page loading hooks hang
+                    print("[DEBUG 6] Page main frame reached domcontentloaded.")
+                except Exception as goto_err: 
+                    print(f"[DEBUG WARNING] page.goto timed out or failed, pushing through: {goto_err}")
                 
                 await asyncio.sleep(4)
+                print("[DEBUG 7] Click sequence initiated...")
                 try:
                     await page.click("video", timeout=4000)
                 except:
                     await page.mouse.click(960, 540)
                 
-                await asyncio.sleep(6) # Give network data a moment to trigger loops
+                await asyncio.sleep(6)
+                print("[DEBUG 8] Step routines completed successfully.")
 
-            # Force the logic above to break after a strict 25.0 second max limit
             try:
                 await asyncio.wait_for(run_browser_steps(), timeout=25.0)
             except asyncio.TimeoutError:
-                print("[-] Web analysis took too long. Forcing step cutoff to process gathered links...")
+                print("[-] Web analysis took too long. Forcing step cutoff...")
 
-            # Pick the best link found (even if the timer cut us off early)
             final_link = hunt["master"] or hunt["big_url"]
-            
             cookies = await context.cookies()
             cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-            
+            print(f"[DEBUG 9] Returning link status. Found match: {final_link is not None}")
             return final_link, cookie_str
             
         finally:
-            # Ensures browser context files and sockets clear completely
+            print("[DEBUG 10] Tearing down browser context instances.")
             await browser.close()
 
 def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str):
