@@ -16,7 +16,7 @@ jobs:
       uses: actions/setup-python@v5
       with:
         python-version: '3.12'
-        cache: 'pip'
+        # Removed the cache line to fix the error 🟢
 
     - name: Install System Dependencies (FFmpeg & FFprobe)
       run: |
@@ -30,9 +30,5 @@ jobs:
 
     - name: Execute Grid Contact Sheet Generator
       env:
-        # Link your existing repository secrets here
         DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
-        INPUT_FOLDER_ID: ${{ secrets.INPUT_FOLDER_ID }}
-        OUTPUT_FOLDER_ID: ${{ secrets.OUTPUT_FOLDER_ID }}
-        CONFIG_FILE_ID: ${{ secrets.CONFIG_FILE_ID }}
       run: python generate_grids.py
