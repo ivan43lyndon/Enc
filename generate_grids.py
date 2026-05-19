@@ -208,7 +208,7 @@ if __name__ == "__main__":
                 print(f"❌ Search Query Error: {e}", flush=True)
 
             if not drive_video_id:
-                print(f"❌ Error: '{video_name}' not found inside Input Folder. Skipping.", flush=True)
+                print(f"❌ Error: '{display_name}' not found inside Input Folder. Skipping.", flush=True)
                 continue
 
             # 4. Stream down the target video locally to pull snapshots from
