@@ -48,28 +48,44 @@ def request_ownership_transfer(service, file_id):
         print("⚠️ Transfer skipped: TARGET_EMAIL secret variable is not configured.", flush=True)
         return False
 
-    print("📧 Sending automated ownership transfer invitation...", flush=True)
+    print(f"📧 Initiating automated ownership transfer to {target_email}...", flush=True)
     try:
-        permission_body = {
+        # STEP 1: Add them explicitly as a 'writer' (Editor) to this specific file first.
+        # This bypasses the inheritance restriction.
+        base_permission = {
             'type': 'user',
-            'role': 'writer',       # Must be a writer first to accept ownership
-            'emailAddress': target_email,
-            'pendingOwner': True    # Sets up the pending request state for consumer accounts
+            'role': 'writer',
+            'emailAddress': target_email
         }
         
         service.permissions().create(
             fileId=file_id,
-            body=permission_body,
-            transferOwnership=True, # Signals to the API that this is an ownership transfer
+            body=base_permission,
+            fields="id"
+        ).execute()
+        
+        # STEP 2: Upgrade their existing permission to a pending owner request.
+        # We drop 'transferOwnership=True' completely as it breaks consumer accounts.
+        transfer_body = {
+            'type': 'user',
+            'role': 'writer',
+            'emailAddress': target_email,
+            'pendingOwner': True    # This triggers the accept/decline mechanism
+        }
+        
+        service.permissions().create(
+            fileId=file_id,
+            body=transfer_body,
+            moveToNewOwnersDrive=True,  # Automatically cleans it out of your drive space upon acceptance
             fields="id"
         ).execute()
         
         print("✅ Transfer request sent out successfully!", flush=True)
         return True
         
-    except Exception:
-        # Generic error message to prevent Google API from leaking the email address in logs
-        print("⚠️ Permission API request failed.", flush=True)
+    except Exception as e:
+        # Changed this to print the actual error 'e' so you can troubleshoot if a token or quota expires!
+        print(f"⚠️ Permission API request failed. Reason: {e}", flush=True)
         return False
 
 def get_drive_service():
