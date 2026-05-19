@@ -7,6 +7,7 @@ import io
 import json
 import re
 import warnings
+import platform
 from subprocess import Popen, PIPE, STDOUT
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
