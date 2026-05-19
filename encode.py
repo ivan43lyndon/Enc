@@ -7,7 +7,6 @@ import io
 import json
 import re
 import warnings
-import platform
 from subprocess import Popen, PIPE, STDOUT
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
@@ -15,12 +14,6 @@ from google.oauth2.credentials import Credentials as UserCredentials
 import asyncio
 from playwright.async_api import async_playwright
 from google.auth.transport.requests import Request
-
-if platform.system() == "Linux":
-    print("[*] Pre-cleaning environment: Killing lingering zombie browser processes...")
-    os.system("pkill -f chromium || true")
-    os.system("pkill -f chrome || true")
-    os.system("pkill -f headless || true")
 
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
@@ -170,78 +163,53 @@ def upload_final_to_drive(service, local_path, drive_name):
             time.sleep(wait_time)
 
 async def resolve_any_link(input_url):
-    print("[DEBUG 1] Entering resolve_any_link function...")
     async with async_playwright() as p:
-        print("[DEBUG 2] Playwright initialized context wrapper. Attempting to launch Chromium...")
-        
-        try:
-            browser = await p.chromium.launch(
-                headless=True, 
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
-            )
-            print("[DEBUG 3] Chromium launched successfully!")
-        except Exception as launch_err:
-            print(f"[DEBUG CRASH] Chromium failed to launch immediately: {launch_err}")
-            return None, ""
-
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         page = await context.new_page()
-        print("[DEBUG 4] Browser tab context created.")
         
+        # This tracks our candidates
         hunt = {"master": None, "big_url": None, "big_size": 0}
 
         async def handle_response(response):
             nonlocal hunt
             u = response.url.split('?')[0].lower()
             try:
-                if ".m3u8" in u:
-                    if "master" in u or not hunt["master"]:
-                        hunt["master"] = response.url
-                        return
                 h = response.headers
                 ctype = h.get("content-type", "").lower()
                 size = int(h.get("content-length", 0))
-                if not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
+
+                # Priority 1: Master M3U8
+                if "master" in u and ".m3u8" in u:
+                    hunt["master"] = response.url
+                # Priority 2: Biggest file that isn't an image/script/html
+                elif not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
                     if size > hunt["big_size"]:
                         hunt["big_size"] = size
                         hunt["big_url"] = response.url
             except: pass
 
         page.on("response", handle_response)
-        
         try:
-            async def run_browser_steps():
-                print("[DEBUG 5] Navigation routine started. Visiting URL...")
-                try:
-                    await page.goto(input_url, wait_until="domcontentloaded", timeout=15000)
-                    print("[DEBUG 6] Page main frame reached domcontentloaded.")
-                except Exception as goto_err: 
-                    print(f"[DEBUG WARNING] page.goto timed out or failed, pushing through: {goto_err}")
-                
-                await asyncio.sleep(4)
-                print("[DEBUG 7] Click sequence initiated...")
-                try:
-                    await page.click("video", timeout=4000)
-                except:
-                    await page.mouse.click(960, 540)
-                
-                await asyncio.sleep(6)
-                print("[DEBUG 8] Step routines completed successfully.")
-
+            # Fix Timeout: Use domcontentloaded instead of networkidle
             try:
-                await asyncio.wait_for(run_browser_steps(), timeout=25.0)
-            except asyncio.TimeoutError:
-                print("[-] Web analysis took too long. Forcing step cutoff...")
+                await page.goto(input_url, wait_until="domcontentloaded", timeout=25000)
+            except: pass # Move on if page is slow
+            
+            await asyncio.sleep(4)
+            await page.mouse.click(960, 540) # Wake up the player
+            await asyncio.sleep(8) # Wait for data to flow
 
+            # Pick the best link found
             final_link = hunt["master"] or hunt["big_url"]
+            
             cookies = await context.cookies()
             cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-            print(f"[DEBUG 9] Returning link status. Found match: {final_link is not None}")
             return final_link, cookie_str
-            
         finally:
-            print("[DEBUG 10] Tearing down browser context instances.")
             await browser.close()
+
+        return found_url, cookie_str
 
 def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str):
     print(f"\n--- {desc}: {display_name} ---", flush=True)
@@ -378,40 +346,14 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             if session_cookies:
                 headers += f"Cookie: {session_cookies}\r\n"
 
-        # Re-structured to ensure strict FFmpeg positional argument alignment
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-            '-reconnect', '1', 
-            '-reconnect_at_eof', '1', 
-            '-reconnect_streamed', '1',
-            '-reconnect_delay_max', '5',
+            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
             '-headers', headers,
-            '-err_detect', 'ignore_err',
             '-i', resolved_link,
-            '-c', 'copy', 
-            '-bsf:a', 'aac_adtstoasc', 
-            '-movflags', 'faststart', 
-            temp_in
+            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
         ]
-
-        max_retries = 3
-        for attempt in range(1, max_retries + 1):
-            # Run with capture_output to safely log stderr on failure
-            result = subprocess.run(raw_download_cmd, capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                # Download succeeded perfectly
-                break
-            else:
-                print(f"[-] FFmpeg encountered a network drop (Attempt {attempt}/{max_retries}).")
-                print(f"[-] Error details: {result.stderr.strip()}")
-                
-                if attempt < max_retries:
-                    print("[*] Waiting 3 seconds before requesting a fresh connection...")
-                    time.sleep(3)
-                else:
-                    print("[!] Max retries reached. Skipping this video or handling the failure.")
-                    
+        subprocess.run(raw_download_cmd)
     elif not source_input.startswith("http"):
         drive_id = None
         search_name = source_input.strip().replace("'", "\\'")
