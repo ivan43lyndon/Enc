@@ -25,7 +25,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 DRIVE_TOKEN = os.environ.get('DRIVE_TOKEN')
 TARGET_EMAIL = os.environ.get('TARGET_EMAIL')
 INPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd'
-OUTPUT_FOLDER_ID = '1y_aDL7D3ozFVdrUQY6XOZvHD8hZK-yVd'
+OUTPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
 CONFIG_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
 
 if not all([DRIVE_TOKEN, TARGET_EMAIL]):
