@@ -20,8 +20,8 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 
 # --- CONFIG (From Secrets/Environment) ---
 DRIVE_TOKEN = os.environ.get('DRIVE_TOKEN')
-INPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd'
-OUTPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
+OUTPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd'
+INPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
 CONFIG_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
 
 # --- Grid Configuration ---
