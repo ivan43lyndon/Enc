@@ -245,7 +245,7 @@ if __name__ == "__main__":
                 continue
 
             # 6. Upload the finished grid preview frame asset to the output folder
-            print(f"📤 Uploading final grid preview sheet -> {output_image_name}", flush=True)
+            print(f"📤 Uploading final grid preview sheet -> {display_name}", flush=True)
             try:
                 media = MediaFileUpload(local_output_image, mimetype='image/jpeg', resumable=True)
                 request = service.files().create(
