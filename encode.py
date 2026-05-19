@@ -471,8 +471,6 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     try:
         q_find = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
         uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
-        if uploaded_files:
-            request_ownership_transfer(service, uploaded_files[0]['id'])
     except Exception as e:
         print(f"⚠️ Could not initiate transfer for single file: {e}", flush=True)
     if os.path.exists(temp_in): os.remove(temp_in)
@@ -611,8 +609,6 @@ if __name__ == "__main__":
                                 safe_raw_name = raw_name.replace("'", "\\'")
                                 q_find = f"name = '{safe_raw_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
                                 uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
-                                if uploaded_files:
-                                    request_ownership_transfer(service, uploaded_files[0]['id'])
                             except Exception as e:
                                 print(f"⚠️ Could not initiate transfer for group file: {e}", flush=True)
                             for p in paths: 
@@ -631,8 +627,6 @@ if __name__ == "__main__":
                             safe_raw_name = raw_name.replace("'", "\\'")
                             q_find = f"name = '{safe_raw_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
                             uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
-                            if uploaded_files:
-                                request_ownership_transfer(service, uploaded_files[0]['id'])
                         except Exception as e:
                             print(f"⚠️ Could not initiate transfer for single CT file: {e}", flush=True)
                         if os.path.exists(paths[0]): os.remove(paths[0])
