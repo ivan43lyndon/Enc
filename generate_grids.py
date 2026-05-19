@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 DRIVE_TOKEN = os.environ.get('DRIVE_TOKEN')
 OUTPUT_FOLDER_ID = '1y_aDL7D3ozFVdrUQY6XOZvHD8hZK-yVd'
 INPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
-CONFIG_FILE_ID = '12LG2eJH9j1h0VShcyBoRhWwkFXCfjWKN'
+CONFIG_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
 
 # --- Grid Configuration ---
 GRID_COLS = 5
@@ -168,6 +168,7 @@ if __name__ == "__main__":
 
         for line in config_lines:
             video_name = line.strip()
+            video_name = video_name.split("##")[-1].spilt(" --- ")[0]
             # Ignore empty lines or comments
             if not video_name or video_name.startswith('#'): continue
             
