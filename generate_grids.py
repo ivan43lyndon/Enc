@@ -177,6 +177,7 @@ if __name__ == "__main__":
             else:
                 filename = line
             if not video_name or video_name.startswith('#'): continue
+            print(video_name)
             
             file_count += 1
             display_name = f"File [{file_count}]"
