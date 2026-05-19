@@ -25,8 +25,8 @@ INPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
 CONFIG_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
 
 # --- Grid Configuration ---
-GRID_COLS = 3
-GRID_ROWS = 6
+GRID_COLS = 5
+GRID_ROWS = 8
 
 def get_drive_service():
     raw = DRIVE_TOKEN.strip()
