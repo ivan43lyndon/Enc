@@ -17,8 +17,10 @@ from playwright.async_api import async_playwright
 from google.auth.transport.requests import Request
 
 if platform.system() == "Linux":
+    print("[*] Pre-cleaning environment: Killing lingering zombie browser processes...")
     os.system("pkill -f chromium || true")
     os.system("pkill -f chrome || true")
+    os.system("pkill -f headless || true")
 
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
