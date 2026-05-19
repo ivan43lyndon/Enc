@@ -38,6 +38,7 @@ jobs:
         id: encoder_step
         env:
           DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
+          TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
         # We handle error status manually, so we don't strictly need continue-on-error here
         run: |
           set +e  # Critical: Prevent the step from failing immediately
