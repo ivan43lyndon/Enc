@@ -51,7 +51,6 @@ def request_ownership_transfer(service, file_id):
     print(f"📧 Initiating automated ownership transfer to {target_email}...", flush=True)
     try:
         # STEP 1: Add them explicitly as a 'writer' (Editor) to this specific file first.
-        # This bypasses the inheritance restriction.
         base_permission = {
             'type': 'user',
             'role': 'writer',
@@ -64,8 +63,7 @@ def request_ownership_transfer(service, file_id):
             fields="id"
         ).execute()
         
-        # STEP 2: Upgrade their existing permission to a pending owner request.
-        # We drop 'transferOwnership=True' completely as it breaks consumer accounts.
+        # STEP 2: Send the pending owner invitation payload
         transfer_body = {
             'type': 'user',
             'role': 'writer',
@@ -76,7 +74,6 @@ def request_ownership_transfer(service, file_id):
         service.permissions().create(
             fileId=file_id,
             body=transfer_body,
-            moveToNewOwnersDrive=True,  # Automatically cleans it out of your drive space upon acceptance
             fields="id"
         ).execute()
         
@@ -84,7 +81,6 @@ def request_ownership_transfer(service, file_id):
         return True
         
     except Exception as e:
-        # Changed this to print the actual error 'e' so you can troubleshoot if a token or quota expires!
         print(f"⚠️ Permission API request failed. Reason: {e}", flush=True)
         return False
 
