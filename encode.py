@@ -346,14 +346,15 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             if session_cookies:
                 headers += f"Cookie: {session_cookies}\r\n"
 
+        # Re-structured to ensure strict FFmpeg positional argument alignment
         raw_download_cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
             '-reconnect', '1', 
             '-reconnect_at_eof', '1', 
             '-reconnect_streamed', '1',
             '-reconnect_delay_max', '5',
-            '-err_detect', 'ignore_err', 
             '-headers', headers,
+            '-err_detect', 'ignore_err',
             '-i', resolved_link,
             '-c', 'copy', 
             '-bsf:a', 'aac_adtstoasc', 
@@ -363,7 +364,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
-            # Run with check=True so Python knows if FFmpeg crashed
+            # Run with capture_output to safely log stderr on failure
             result = subprocess.run(raw_download_cmd, capture_output=True, text=True)
             
             if result.returncode == 0:
@@ -379,6 +380,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                     time.sleep(3)
                 else:
                     print("[!] Max retries reached. Skipping this video or handling the failure.")
+                    
     elif not source_input.startswith("http"):
         drive_id = None
         search_name = source_input.strip().replace("'", "\\'")
