@@ -15,6 +15,10 @@ import asyncio
 from playwright.async_api import async_playwright
 from google.auth.transport.requests import Request
 
+if platform.system() == "Linux":
+    os.system("pkill -f chromium || true")
+    os.system("pkill -f chrome || true")
+
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
 TIMEOUT_LIMIT = 20000 # 5 hours and 33 minutes (safe buffer)
@@ -197,7 +201,10 @@ async def resolve_any_link(input_url):
             except: pass # Move on if page is slow
             
             await asyncio.sleep(4)
-            await page.mouse.click(960, 540) # Wake up the player
+            try:
+                await page.click("video", timeout=5000)
+            except:
+                await page.mouse.click(960, 540)
             await asyncio.sleep(8) # Wait for data to flow
 
             # Pick the best link found
