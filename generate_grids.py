@@ -168,8 +168,14 @@ if __name__ == "__main__":
 
         for line in config_lines:
             video_name = line.strip()
-            video_name = video_name.split("##")[-1].spilt(" --- ")[0]
-            # Ignore empty lines or comments
+            if "---" in line:
+                left_side = line.split("---")[0].strip()
+                if "##" in left_side:
+                    filename = left_side.split("##")[1].strip()
+                else:
+                    filename = left_side
+            else:
+                filename = line
             if not video_name or video_name.startswith('#'): continue
             
             file_count += 1
