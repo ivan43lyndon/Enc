@@ -364,7 +364,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                 ]
                 
                 # 15 minutes max for a single file download stream step before we declare a hang
-                DOWNLOAD_TIMEOUT = 900 
+                DOWNLOAD_TIMEOUT = 100 
                 
                 print(f"📥 FFMPEG downloading stream (Timeout guard: {DOWNLOAD_TIMEOUT}s)...", flush=True)
                 result = subprocess.run(raw_download_cmd, timeout=DOWNLOAD_TIMEOUT)
