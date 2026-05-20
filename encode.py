@@ -277,83 +277,121 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     if source_input.startswith("http"):
         print(f"🕵️ Analyzing web source: {display_name}...", flush=True)
         
-        bracket_match = re.match(r"(.+?)\[(\d+)\]$", source_input)
-        
-        if bracket_match:
-            folder_url = bracket_match.group(1)
-            target_index = int(bracket_match.group(2)) - 1
+        # We will retry the ENTIRE scraping + downloading process up to 3 times
+        max_download_attempts = 3
+        download_success = False
+
+        for dl_attempt in range(1, max_download_attempts + 1):
+            print(f"🔄 [Attempt {dl_attempt}/{max_download_attempts}] Scraping fresh link and starting download...", flush=True)
             
-            print(f"📁 Folder parameter detected. Locating file index [{target_index}]...", flush=True)
-            file_list = []
-            session_cookies = ""
+            # Clean up any leftover dead file from a previous failed attempt
+            if os.path.exists(temp_in):
+                os.remove(temp_in)
+
+            bracket_match = re.match(r"(.+?)\[(\d+)\]$", source_input)
             
-            async def scrape_folder():
-                nonlocal session_cookies
-                fl = []
-                async with async_playwright() as p:
-                    browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-                    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-                    page = await context.new_page()
+            # --- PHASE 1: SCRAPE THE LINK ---
+            try:
+                if bracket_match:
+                    folder_url = bracket_match.group(1)
+                    target_index = int(bracket_match.group(2)) - 1
                     
-                    async def handle_response(resp):
-                        if "api.gofile.io/contents" in resp.url:
+                    file_list = []
+                    session_cookies = ""
+                    
+                    async def scrape_folder():
+                        nonlocal session_cookies
+                        fl = []
+                        async with async_playwright() as p:
+                            browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+                            context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            page = await context.new_page()
+                            
+                            async def handle_response(resp):
+                                if "api.gofile.io/contents" in resp.url:
+                                    try:
+                                        data = json.loads(await resp.text())
+                                        if data.get("status") == "ok":
+                                            children = data.get("data", {}).get("children", {})
+                                            for item in children.values():
+                                                if item.get("type") == "file":
+                                                    fl.append({"name": item.get("name"), "link": item.get("link")})
+                                    except: pass
+
+                            page.on("response", handle_response)
                             try:
-                                data = json.loads(await resp.text())
-                                if data.get("status") == "ok":
-                                    children = data.get("data", {}).get("children", {})
-                                    for item in children.values():
-                                        if item.get("type") == "file":
-                                            fl.append({"name": item.get("name"), "link": item.get("link")})
-                            except: pass
-
-                    page.on("response", handle_response)
-                    try:
-                        # Correct Python syntax: context manager expects response while executing goto
-                        async with page.expect_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000):
-                            await page.goto(folder_url, wait_until="commit", timeout=30000)
+                                async with page.expect_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000):
+                                    await page.goto(folder_url, wait_until="commit", timeout=30000)
+                                await asyncio.sleep(2) 
+                                cookies = await context.cookies()
+                                session_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                            finally:
+                                await browser.close()
                         
-                        await asyncio.sleep(2) 
+                        fl.sort(key=lambda x: x["name"].lower())  
+                        return fl
+
+                    file_list = asyncio.run(scrape_folder())
+                    
+                    if not file_list or target_index >= len(file_list):
+                        print(f"⚠️ Scraping failed or index out of bounds on attempt {dl_attempt}.", flush=True)
+                        time.sleep(5)
+                        continue
                         
-                        cookies = await context.cookies()
-                        session_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-                    finally:
-                        await browser.close()
+                    selected_file = file_list[target_index]
+                    resolved_link = selected_file["link"]
+                    headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                    if session_cookies:
+                        headers += f"Cookie: {session_cookies}\r\n"
+                else:
+                    resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
+                    if not resolved_link:
+                        print(f"⚠️ Playwright failed to resolve stream on attempt {dl_attempt}.", flush=True)
+                        time.sleep(5)
+                        continue
+
+                    headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                    if session_cookies:
+                        headers += f"Cookie: {session_cookies}\r\n"
+
+                # --- PHASE 2: HAND OFF TO FFMPEG WITH TIMEOUT PROTECTION ---
+                raw_download_cmd = [
+                    'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                    '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
+                    '-headers', headers,
+                    '-i', resolved_link,
+                    '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
+                ]
                 
-                fl.sort(key=lambda x: x["name"].lower())  
-                return fl
-
-            file_list = asyncio.run(scrape_folder())
-            
-            if not file_list:
-                return f"❌ FAILED: Folder contents empty or inaccessible", False
-            if target_index >= len(file_list):
-                return f"❌ FAILED: Requested index [{target_index}], but directory only contains {len(file_list)} files", False
+                # 15 minutes max for a single file download stream step before we declare a hang
+                DOWNLOAD_TIMEOUT = 900 
                 
-            selected_file = file_list[target_index]
-            resolved_link = selected_file["link"]
-            print(f"🎯 Match found! Slot -> [{display_name}] | Index: [{target_index}]", flush=True)
+                print(f"📥 FFMPEG downloading stream (Timeout guard: {DOWNLOAD_TIMEOUT}s)...", flush=True)
+                result = subprocess.run(raw_download_cmd, timeout=DOWNLOAD_TIMEOUT)
+                
+                if result.returncode == 0 and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
+                    print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
+                    download_success = True
+                    break # Break out of the retry loop, we got a good file!
+                else:
+                    print(f"⚠️ FFMPEG exited with error code {result.returncode} on attempt {dl_attempt}.", flush=True)
+                    
+            except subprocess.TimeoutExpired:
+                print(f"⚠️ FFMPEG hung up and hit the {DOWNLOAD_TIMEOUT}s timeout wall on attempt {dl_attempt}.", flush=True)
+            except Exception as e:
+                print(f"⚠️ Unexpected error during scraping/download phase: {e}", flush=True)
             
-            headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-            if session_cookies:
-                headers += f"Cookie: {session_cookies}\r\n"
+            # If we get here, the attempt failed. Wait a bit before resetting.
+            print("⏳ Cool-down before hitting the host again...", flush=True)
+            time.sleep(10)
 
-        else:
-            resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
-            if not resolved_link:
-                return f"❌ FAILED: No stream found", False
-
-            headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-            if session_cookies:
-                headers += f"Cookie: {session_cookies}\r\n"
-
-        raw_download_cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
-            '-headers', headers,
-            '-i', resolved_link,
-            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
-        ]
-        subprocess.run(raw_download_cmd)
+        # If all attempts completely tanked, drop out of the file processing entirely
+        if not download_success:
+            if os.path.exists(temp_in):
+                os.remove(temp_in)
+            print(f"❌ FAILED: Unable to download {display_name} after {max_download_attempts} full link-reset retries.", flush=True)
+            return f"❌ FAILED: All download retries exhausted", False
+            
     elif not source_input.startswith("http"):
         drive_id = None
         search_name = source_input.strip().replace("'", "\\'")
