@@ -199,7 +199,7 @@ if __name__ == "__main__":
             file_count += 1
             display_name = f"File [{file_count}/{len(video_files)}]"
             print(f"\n========================================")
-            print(f"🎬 Processing: {display_name} | {video_name}", flush=True)
+            print(f"🎬 Processing: {display_name}", flush=True)
 
             # Generate the corresponding output image name (e.g., "video.mp4" -> "video_preview.jpg")
             base_name, _ = os.path.splitext(video_name)
