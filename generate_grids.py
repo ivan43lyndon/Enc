@@ -21,8 +21,7 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # --- CONFIG (From Secrets/Environment) ---
 DRIVE_TOKEN = os.environ.get('DRIVE_TOKEN')
 OUTPUT_FOLDER_ID = '1y_aDL7D3ozFVdrUQY6XOZvHD8hZK-yVd'
-INPUT_FOLDER_ID = '14KAhaiTisjuybP2Pc6mcbLau8JoyDq5y'
-CONFIG_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
+INPUT_FOLDER_ID = '1G7nC7CrMi_8HdtVGxdR-aNdak9FrVAcd'
 
 # --- Grid Configuration ---
 GRID_COLS = 5
@@ -158,29 +157,49 @@ if __name__ == "__main__":
     try:
         service = get_drive_service()
         
-        # 1. Download the list of target filenames from the config file
-        print("📥 Fetching configuration name list from Drive...", flush=True)
-        fh = io.BytesIO()
-        MediaIoBaseDownload(fh, service.files().get_media(fileId=CONFIG_FILE_ID)).next_chunk()
-        config_lines = fh.getvalue().decode().splitlines()
+        # 1. Fetch all video files directly from the Input Folder
+        print("🔍 Scanning Input Folder for video assets...", flush=True)
+        video_files = []
+        page_token = None
+        
+        query_parts = [
+            f"'{INPUT_FOLDER_ID}' in parents",
+            "trashed = false",
+            "(mimeType contains 'video/' or name endings '.mp4' or name endings '.mkv' or name endings '.avi' or name endings '.mov')"
+        ]
+        folder_query = " and ".join(query_parts)
+
+        while True:
+            response = service.files().list(
+                q=folder_query,
+                fields="nextPageToken, files(id, name)",
+                pageSize=1000,
+                pageToken=page_token
+            ).execute()
+            
+            video_files.extend(response.get('files', []))
+            page_token = response.get('nextPageToken', None)
+            if not page_token:
+                break
+
+        if not video_files:
+            print("⚠️ No video files discovered in the input folder. Exiting.", flush=True)
+            sys.exit(0)
+
+        # Sort files alphabetically by name to keep execution predictable
+        video_files.sort(key=lambda x: x['name'].lower())
+        print(f"🎯 Found {len(video_files)} video files to process.", flush=True)
 
         file_count = 0
 
-        for line in config_lines:
-            if "---" in line:
-                left_side = line.split("---")[0].strip()
-                if "##" in left_side:
-                    video_name = left_side.split("##")[1].strip()
-                else:
-                    video_name = left_side
-            else:
-                video_name = line.strip()
-            if not video_name or video_name.startswith('#'): continue
+        for file_info in video_files:
+            video_name = file_info['name']
+            drive_video_id = file_info['id']
             
             file_count += 1
-            display_name = f"File [{file_count}]"
+            display_name = f"File [{file_count}/{len(video_files)}]"
             print(f"\n========================================")
-            print(f"🎬 Processing: {display_name}", flush=True)
+            print(f"🎬 Processing: {display_name} | {video_name}", flush=True)
 
             # Generate the corresponding output image name (e.g., "video.mp4" -> "video_preview.jpg")
             base_name, _ = os.path.splitext(video_name)
@@ -201,78 +220,3 @@ if __name__ == "__main__":
             if time.time() - START_TIME > TIMEOUT_LIMIT:
                 print("\n⏳ TIMEOUT REACHED. Exiting for workflow continuation...", flush=True)
                 sys.exit(99)
-
-            # 3. Search for the source video file in the input folder
-            search_name = video_name.replace("'", "\\'")
-            drive_video_id = None
-            try:
-                query = f"name = '{search_name}' and '{INPUT_FOLDER_ID}' in parents and trashed = false"
-                res = service.files().list(q=query, fields="files(id)").execute().get('files', [])
-                if res:
-                    drive_video_id = res[0]['id']
-            except Exception as e:
-                print(f"❌ Search Query Error: {e}", flush=True)
-
-            if not drive_video_id:
-                print(f"❌ Error: '{display_name}' not found inside Input Folder. Skipping.", flush=True)
-                continue
-
-            # 4. Stream down the target video locally to pull snapshots from
-            local_temp_video = f"temp_{file_count}.mp4"
-            local_output_image = f"grid_{file_count}.jpg"
-
-            print(f"📥 Downloading video file payload asset...", flush=True)
-            try:
-                request = service.files().get_media(fileId=drive_video_id)
-                with io.FileIO(local_temp_video, 'wb') as f_handle:
-                    downloader = MediaIoBaseDownload(f_handle, request, chunksize=10*1024*1024)
-                    done = False
-                    while not done:
-                        status, done = downloader.next_chunk()
-                        if status:
-                            print(f"📥 Download Progress: {int(status.progress()*100)}%", end='\r', flush=True)
-                print(f"\n💾 Download complete.", flush=True)
-            except Exception as e:
-                print(f"❌ Download Failed: {e}", flush=True)
-                if os.path.exists(local_temp_video): os.remove(local_temp_video)
-                continue
-
-            # 5. Extract timeline spacing positions and paint the contact sheet grid image canvas
-            print(f"📸 Generating screenlist image canvas layout...", flush=True)
-            success = generate_local_contact_sheet(local_temp_video, local_output_image, cols=GRID_COLS, rows=GRID_ROWS)
-            
-            # Remove video payload immediately after snapshot processing to free up disk space
-            if os.path.exists(local_temp_video): 
-                os.remove(local_temp_video)
-
-            if not success:
-                print(f"❌ Failed to parse frames or video metadata metrics.", flush=True)
-                if os.path.exists(local_output_image): os.remove(local_output_image)
-                continue
-
-            # 6. Upload the finished grid preview frame asset to the output folder
-            print(f"📤 Uploading final grid preview sheet -> {display_name}", flush=True)
-            try:
-                media = MediaFileUpload(local_output_image, mimetype='image/jpeg', resumable=True)
-                request = service.files().create(
-                    body={'name': output_image_name, 'parents': [OUTPUT_FOLDER_ID]}, 
-                    media_body=media
-                )
-                response = None
-                while response is None:
-                    status, response = request.next_chunk()
-                    if status:
-                        print(f"⬆️ Uploading Image: {int(status.progress() * 100)}%", end='\r', flush=True)
-                print(f"\n🚀 PREVIEW SHEET SAVED SUCCESSFUL!", flush=True)
-            except Exception as e:
-                print(f"⚠️ Upload Failed: {e}", flush=True)
-            finally:
-                if os.path.exists(local_output_image): 
-                    os.remove(local_output_image)
-
-        print("\n✅ ALL FILENAMES FROM CONFIG FILE PROCESSED.", flush=True)
-        sys.exit(0)
-
-    except Exception as e:
-        print(f"💥 Critical Failure: {e}")
-        sys.exit(99)
