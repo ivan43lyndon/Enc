@@ -165,7 +165,7 @@ if __name__ == "__main__":
         query_parts = [
             f"'{INPUT_FOLDER_ID}' in parents",
             "trashed = false",
-            "(mimeType contains 'video' or name has '.mp4' or name has '.mkv' or name has '.avi' or name has '.mov')"
+            "mimeType contains 'video'"
         ]
         folder_query = " and ".join(query_parts)
 
