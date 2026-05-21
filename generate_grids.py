@@ -220,3 +220,63 @@ if __name__ == "__main__":
             if time.time() - START_TIME > TIMEOUT_LIMIT:
                 print("\n⏳ TIMEOUT REACHED. Exiting for workflow continuation...", flush=True)
                 sys.exit(99)
+
+            # 4. Stream down the target video locally to pull snapshots from
+            local_temp_video = f"temp_{file_count}.mp4"
+            local_output_image = f"grid_{file_count}.jpg"
+
+            print(f"📥 Downloading video file payload asset...", flush=True)
+            try:
+                request = service.files().get_media(fileId=drive_video_id)
+                with io.FileIO(local_temp_video, 'wb') as f_handle:
+                    downloader = MediaIoBaseDownload(f_handle, request, chunksize=10*1024*1024)
+                    done = False
+                    while not done:
+                        status, done = downloader.next_chunk()
+                        if status:
+                            print(f"📥 Download Progress: {int(status.progress()*100)}%", end='\r', flush=True)
+                print(f"\n💾 Download complete.", flush=True)
+            except Exception as e:
+                print(f"❌ Download Failed: {e}", flush=True)
+                if os.path.exists(local_temp_video): os.remove(local_temp_video)
+                continue
+
+            # 5. Extract timeline spacing positions and paint the contact sheet grid image canvas
+            print(f"📸 Generating screenlist image canvas layout...", flush=True)
+            success = generate_local_contact_sheet(local_temp_video, local_output_image, cols=GRID_COLS, rows=GRID_ROWS)
+            
+            # Remove video payload immediately after snapshot processing to free up disk space
+            if os.path.exists(local_temp_video): 
+                os.remove(local_temp_video)
+
+            if not success:
+                print(f"❌ Failed to parse frames or video metadata metrics.", flush=True)
+                if os.path.exists(local_output_image): os.remove(local_output_image)
+                continue
+
+            # 6. Upload the finished grid preview frame asset to the output folder
+            print(f"📤 Uploading final grid preview sheet -> {display_name}", flush=True)
+            try:
+                media = MediaFileUpload(local_output_image, mimetype='image/jpeg', resumable=True)
+                request = service.files().create(
+                    body={'name': output_image_name, 'parents': [OUTPUT_FOLDER_ID]}, 
+                    media_body=media
+                )
+                response = None
+                while response is None:
+                    status, response = request.next_chunk()
+                    if status:
+                        print(f"⬆️ Uploading Image: {int(status.progress() * 100)}%", end='\r', flush=True)
+                print(f"\n🚀 PREVIEW SHEET SAVED SUCCESSFUL!", flush=True)
+            except Exception as e:
+                print(f"⚠️ Upload Failed: {e}", flush=True)
+            finally:
+                if os.path.exists(local_output_image): 
+                    os.remove(local_output_image)
+
+        print("\n✅ ALL VIDEOS IN THE INPUT FOLDER PROCESSED.", flush=True)
+        sys.exit(0)
+
+    except Exception as e:
+        print(f"💥 Critical Failure: {e}")
+        sys.exit(99)
