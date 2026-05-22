@@ -575,29 +575,30 @@ if __name__ == "__main__":
             data = {'mode': entry['mode'], 'times': entry['times'], 'fade': entry['fade']}
             
             try:
-                if should_call_drive:
-                    # Normal behavior: check Drive, then download/encode
-                    local_file, was_skipped = process_video(
-                        service, entry['source'], "link", data, 
-                        f"[{file_count}]", file_count, hold_upload=is_part_of_group, ct_code=ct_code, 
-                        current_part=len(ct_groups[ct_code]) + 1 if ct_code else 0,
-                        total_parts=ct_total_counts[ct_code] if ct_code else 0
-                    )
-                    
-                    if was_skipped and is_part_of_group:
-                        print(f"✅ GROUP CT{ct_code} already exists. Skipping all parts.")
-                        skipped_ct_tags.add(ct_code)
-                        continue
+                if is_part_of_group and not is_first_part:
+                    print(f"🛠️  CT PART {len(ct_groups[ct_code])+1}/{ct_total_counts[ct_code]}: Processing segment locally...")
+                    skip_api_check_value = True
                 else:
-                    print(f"🛠️  CT PART {len(ct_groups[ct_code])+1}/{ct_total_counts[ct_code]}: Encoding locally (No API check)...")
-                    
-                    local_file, was_skipped = process_video(
-                        service, entry['source'], "link", data, 
-                        f"[{file_count}]", file_count, hold_upload=True, 
-                        skip_api_check=True, ct_code=ct_code,
-                        current_part=len(ct_groups[ct_code]) + 1,
-                        total_parts=ct_total_counts[ct_code] 
-                    )
+                    skip_api_check_value = False
+
+                local_file, was_skipped = process_video(
+                    service, 
+                    entry['source'], 
+                    "link", 
+                    data, 
+                    f"[{file_count}]", 
+                    file_count, 
+                    hold_upload=True if is_part_of_group else False, 
+                    skip_api_check=skip_api_check_value, 
+                    ct_code=ct_code, 
+                    current_part=len(ct_groups[ct_code]) + 1 if ct_code else 0,
+                    total_parts=ct_total_counts[ct_code] if ct_code else 0
+                )
+                
+                if was_skipped and is_part_of_group and is_first_part:
+                    print(f"✅ GROUP CT{ct_code} already exists on Drive. Skipping all remaining parts.")
+                    skipped_ct_tags.add(ct_code)
+                    continue
                 
                 if ct_code and local_file:
                     ct_groups[ct_code].append({'path': local_file, 'line': entry['line']})
