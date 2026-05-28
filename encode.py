@@ -274,8 +274,9 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         print("\n⏳ TIMEOUT REACHED. Exiting for restart...", flush=True)
         sys.exit(99) 
 
+    print(f"\n========================================")
+    
     if source_input.startswith("http"):
-        print(f"\n========================================")
         print(f"🕵️ Analyzing web source: {display_name}...", flush=True)
         
         # We will retry the ENTIRE scraping + downloading process up to 3 times
