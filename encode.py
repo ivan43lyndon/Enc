@@ -507,7 +507,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             print(f"⚠️ Upload flicker: {e}. Retrying...", flush=True)
             time.sleep(5)
 
-    print(f"🚀 SINGLE FILE UPLOAD COMPLETE: {display_name}\n", flush=True)
+    print(f"🚀 SINGLE FILE UPLOAD COMPLETE: {display_name}", flush=True)
     try:
         q_find = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
         uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
@@ -663,7 +663,7 @@ if __name__ == "__main__":
                     else:
                         print(f"📦 Only 1 file for CT{ct_code}. Uploading normally.", flush=True)
                         upload_final_to_drive(service, paths[0], raw_name)
-                        print(f"🚀 SINGLE CT FILE UPLOAD COMPLETE!\n", flush=True)
+                        print(f"🚀 SINGLE CT FILE UPLOAD COMPLETE!", flush=True)
                         try:
                             safe_raw_name = raw_name.replace("'", "\\'")
                             q_find = f"name = '{safe_raw_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
