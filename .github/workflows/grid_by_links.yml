@@ -32,9 +32,9 @@ jobs:
 
       - name: Install Python Dependencies
         run: |
-          pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
+          pip install google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib Pillow
           
-      - name: Run Encoder
+      - name: Run Grid Generator
         id: encoder_step
         env:
           DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
