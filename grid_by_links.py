@@ -406,7 +406,7 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
         return False
 
     # --- PHASE 3: UPLOAD DESTINATION ROUTINE ---
-    print(f"📤 Uploading: \"{output_image_name}\" -> Output folder...", flush=True)
+    print(f"📤 Uploading: \"{display_name}\" -> Output folder...", flush=True)
     try:
         media = MediaFileUpload(local_output_image, mimetype='image/jpeg', resumable=True)
         request = service.files().create(body={'name': output_image_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
