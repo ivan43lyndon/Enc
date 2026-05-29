@@ -235,6 +235,9 @@ if __name__ == "__main__":
         for file_info in video_files:
             video_name = file_info['name']
             drive_video_id = file_info['id']
+
+            if "---" in drive_video_id:
+                drive_video_id = drive_video_id.split("---")[0].strip()
             
             file_count += 1
             display_name = f"File [{file_count}/{len(video_files)}]"
