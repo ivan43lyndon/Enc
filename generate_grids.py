@@ -284,62 +284,57 @@ if __name__ == "__main__":
                     
                     try:
                         if bracket_match:
-                        folder_url = bracket_match.group(1)
-                        target_index = int(bracket_match.group(2)) - 1
-                        file_list = []
-                        
-                        # 1. Store the cookies in a dictionary object
-                        shared_data = {"session_cookies": ""}
-                        
-                        async def scrape_folder():
-                            # ─── REMOVE THE 'nonlocal session_cookies' LINE FROM HERE ───
-                            fl = []
-                            async with async_playwright() as p:
-                                browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-                                context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-                                page = await context.new_page()
-                                
-                                async def handle_response(resp):
-                                    if "api.gofile.io/contents" in resp.url:
-                                        try:
-                                            res_data = json.loads(await resp.text())
-                                            if res_data.get("status") == "ok":
-                                                children = res_data.get("data", {}).get("children", {})
-                                                for item in children.values():
-                                                    if item.get("type") == "file":
-                                                        fl.append({"name": item.get("name"), "link": item.get("link")})
-                                        except: pass
-
-                                page.on("response", handle_response)
-                                try:
-                                    async with page.expect_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000):
-                                        await page.goto(folder_url, wait_until="commit", timeout=30000)
-                                    await asyncio.sleep(2) 
-                                    cookies = await context.cookies()
-                                    
-                                    # 2. Write straight to the dictionary object
-                                    shared_data["session_cookies"] = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-                                finally:
-                                    await browser.close()
-                                    
-                            fl.sort(key=lambda x: x["name"].lower())  
-                            return fl
-
-                        file_list = asyncio.run(scrape_folder())
-                        
-                        # 3. Read it back out to use in headers
-                        session_cookies = shared_data["session_cookies"]
-                        
-                        if not file_list or target_index >= len(file_list):
-                            print(f"⚠️ Scraping failed or index out of bounds on attempt {dl_attempt}.", flush=True)
-                            time.sleep(5)
-                            continue
+                            folder_url = bracket_match.group(1)
+                            target_index = int(bracket_match.group(2)) - 1
+                            file_list = []
                             
-                        selected_file = file_list[target_index]
-                        resolved_link = selected_file["link"]
-                        headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-                        if session_cookies:
-                            headers += f"Cookie: {session_cookies}\r\n"
+                            # Use a local dictionary tracker to share data cleanly across scopes
+                            shared_data = {"session_cookies": ""}
+                            
+                            async def scrape_folder():
+                                fl = []
+                                async with async_playwright() as p:
+                                    browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+                                    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                                    page = await context.new_page()
+                                    
+                                    async def handle_response(resp):
+                                        if "api.gofile.io/contents" in resp.url:
+                                            try:
+                                                res_data = json.loads(await resp.text())
+                                                if res_data.get("status") == "ok":
+                                                    children = res_data.get("data", {}).get("children", {})
+                                                    for item in children.values():
+                                                        if item.get("type") == "file":
+                                                            fl.append({"name": item.get("name"), "link": item.get("link")})
+                                            except: pass
+
+                                    page.on("response", handle_response)
+                                    try:
+                                        async with page.expect_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000):
+                                            await page.goto(folder_url, wait_until="commit", timeout=30000)
+                                        await asyncio.sleep(2) 
+                                        cookies = await context.cookies()
+                                        shared_data["session_cookies"] = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                                    finally:
+                                        await browser.close()
+                                        
+                                fl.sort(key=lambda x: x["name"].lower())  
+                                return fl
+
+                            file_list = asyncio.run(scrape_folder())
+                            session_cookies = shared_data["session_cookies"]
+                            
+                            if not file_list or target_index >= len(file_list):
+                                print(f"⚠️ Scraping failed or index out of bounds on attempt {dl_attempt}.", flush=True)
+                                time.sleep(5)
+                                continue
+                                
+                            selected_file = file_list[target_index]
+                            resolved_link = selected_file["link"]
+                            headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                            if session_cookies:
+                                headers += f"Cookie: {session_cookies}\r\n"
                         else:
                             resolved_link, session_cookies = asyncio.run(resolve_any_link(raw_input))
                             if not resolved_link:
