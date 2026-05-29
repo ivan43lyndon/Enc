@@ -234,7 +234,7 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
                     q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
                     check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
                     if check:
-                        print(f"⏩ SKIPPING: Grid already exists for {display_name} , flush=True)
+                        print(f"⏩ SKIPPING: Grid already exists for {display_name}", flush=True)
                         return True
                     break 
                 except Exception as e:
