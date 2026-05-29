@@ -6,7 +6,9 @@ import io
 import json
 import re
 import warnings
+import asyncio
 from PIL import Image, ImageDraw, ImageFont
+from playwright.async_api import async_playwright
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.credentials import Credentials as UserCredentials
@@ -59,19 +61,58 @@ def format_time(seconds):
     secs = int(seconds % 60)
     return f"{hrs:02d}:{mins:02d}:{secs:02d}"
 
+async def resolve_any_link(input_url):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+        page = await context.new_page()
+        
+        hunt = {"master": None, "big_url": None, "big_size": 0}
+
+        async def handle_response(response):
+            nonlocal hunt
+            u = response.url.split('?')[0].lower()
+            try:
+                h = response.headers
+                ctype = h.get("content-type", "").lower()
+                size = int(h.get("content-length", 0))
+
+                if "master" in u and ".m3u8" in u:
+                    hunt["master"] = response.url
+                elif not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
+                    if size > hunt["big_size"]:
+                        hunt["big_size"] = size
+                        hunt["big_url"] = response.url
+            except: pass
+
+        page.on("response", handle_response)
+        try:
+            try:
+                await page.goto(input_url, wait_until="domcontentloaded", timeout=25000)
+            except: pass
+            
+            await asyncio.sleep(4)
+            await page.mouse.click(960, 540)
+            await asyncio.sleep(8)
+
+            final_link = hunt["master"] or hunt["big_url"]
+            cookies = await context.cookies()
+            cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+            return final_link, cookie_str
+        finally:
+            await browser.close()
+
 def get_video_metadata(video_path):
     try:
-        # Request data in clean JSON format to prevent string split crashes
         cmd = [
             'ffprobe', '-v', 'error',
-            '-select_streams', 'v:0', # Target ONLY the first video stream
+            '-select_streams', 'v:0',
             '-show_entries', 'format=duration,size:stream=width,height',
             '-of', 'json', video_path
         ]
         out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
         data = json.loads(out)
         
-        # Safely extract metrics with default fallbacks
         stream = data.get('streams', [{}])[0]
         fmt = data.get('format', {})
         
@@ -80,7 +121,6 @@ def get_video_metadata(video_path):
         duration = float(fmt.get('duration', 0.0))
         size_bytes = float(fmt.get('size', 0.0))
         
-        # Fallback if duration is missing from format header (common in some MKVs)
         if duration == 0.0 and 'duration' in stream:
             try: duration = float(stream['duration'])
             except: pass
@@ -201,7 +241,7 @@ if __name__ == "__main__":
             print(f"\n========================================")
             print(f"🎬 Processing: {display_name}", flush=True)
 
-            # Generate the corresponding output image name (e.g., "video.mp4" -> "video_preview.jpg")
+            # Generate the corresponding output image name
             base_name, _ = os.path.splitext(video_name)
             output_image_name = f"{base_name}_preview.jpg"
             safe_q_name = output_image_name.replace("'", "\\'")
@@ -221,31 +261,139 @@ if __name__ == "__main__":
                 print("\n⏳ TIMEOUT REACHED. Exiting for workflow continuation...", flush=True)
                 sys.exit(99)
 
-            # 4. Stream down the target video locally to pull snapshots from
             local_temp_video = f"temp_{file_count}.mp4"
             local_output_image = f"grid_{file_count}.jpg"
 
-            print(f"📥 Downloading video file payload asset...", flush=True)
-            try:
-                request = service.files().get_media(fileId=drive_video_id)
-                with io.FileIO(local_temp_video, 'wb') as f_handle:
-                    downloader = MediaIoBaseDownload(f_handle, request, chunksize=10*1024*1024)
-                    done = False
-                    while not done:
-                        status, done = downloader.next_chunk()
-                        if status:
-                            print(f"📥 Download Progress: {int(status.progress()*100)}%", end='\r', flush=True)
-                print(f"\n💾 Download complete.", flush=True)
-            except Exception as e:
-                print(f"❌ Download Failed: {e}", flush=True)
-                if os.path.exists(local_temp_video): os.remove(local_temp_video)
-                continue
+            # --- COMBINED DOWNLOADING BLOCK (SUPPORTING COPIED ONLINE SCRAPING) ---
+            raw_input = drive_video_id.strip()
+            download_success = False
+
+            if raw_input.startswith("http"):
+                print(f"🕵️ Analyzing web source for preview generation...", flush=True)
+                max_download_attempts = 3
+
+                for dl_attempt in range(1, max_download_attempts + 1):
+                    print(f"🔄 [Attempt {dl_attempt}/{max_download_attempts}] Scraping fresh link and starting download...", flush=True)
+                    if os.path.exists(local_temp_video):
+                        os.remove(local_temp_video)
+
+                    bracket_match = re.match(r"(.+?)\[(\d+)\]$", raw_input)
+                    
+                    try:
+                        if bracket_match:
+                            folder_url = bracket_match.group(1)
+                            target_index = int(bracket_match.group(2)) - 1
+                            file_list = []
+                            session_cookies = ""
+                            
+                            async def scrape_folder():
+                                nonlocal session_cookies
+                                fl = []
+                                async with async_playwright() as p:
+                                    browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+                                    context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+                                    page = await context.new_page()
+                                    
+                                    async def handle_response(resp):
+                                        if "api.gofile.io/contents" in resp.url:
+                                            try:
+                                                res_data = json.loads(await resp.text())
+                                                if res_data.get("status") == "ok":
+                                                    children = res_data.get("data", {}).get("children", {})
+                                                    for item in children.values():
+                                                        if item.get("type") == "file":
+                                                            fl.append({"name": item.get("name"), "link": item.get("link")})
+                                            except: pass
+
+                                    page.on("response", handle_response)
+                                    try:
+                                        async with page.expect_response(lambda r: "api.gofile.io/contents" in r.url, timeout=30000):
+                                            await page.goto(folder_url, wait_until="commit", timeout=30000)
+                                        await asyncio.sleep(2) 
+                                        cookies = await context.cookies()
+                                        session_cookies = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                                    finally:
+                                        await browser.close()
+                                
+                                fl.sort(key=lambda x: x["name"].lower())  
+                                return fl
+
+                            file_list = asyncio.run(scrape_folder())
+                            if not file_list or target_index >= len(file_list):
+                                print(f"⚠️ Scraping failed or index out of bounds on attempt {dl_attempt}.", flush=True)
+                                time.sleep(5)
+                                continue
+                                
+                            selected_file = file_list[target_index]
+                            resolved_link = selected_file["link"]
+                            headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                            if session_cookies:
+                                headers += f"Cookie: {session_cookies}\r\n"
+                        else:
+                            resolved_link, session_cookies = asyncio.run(resolve_any_link(raw_input))
+                            if not resolved_link:
+                                print(f"⚠️ Playwright failed to resolve stream on attempt {dl_attempt}.", flush=True)
+                                time.sleep(5)
+                                continue
+
+                            headers = f"Referer: {raw_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                            if session_cookies:
+                                headers += f"Cookie: {session_cookies}\r\n"
+
+                        raw_download_cmd = [
+                            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                            '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
+                            '-headers', headers,
+                            '-i', resolved_link,
+                            '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', local_temp_video
+                        ]
+                        
+                        DOWNLOAD_TIMEOUT = 100 
+                        print(f"📥 FFMPEG downloading stream (Timeout guard: {DOWNLOAD_TIMEOUT}s)...", flush=True)
+                        result = subprocess.run(raw_download_cmd, timeout=DOWNLOAD_TIMEOUT)
+                        
+                        if result.returncode == 0 and os.path.exists(local_temp_video) and os.path.getsize(local_temp_video) > 10000:
+                            print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
+                            download_success = True
+                            break
+                        else:
+                            print(f"⚠️ FFMPEG exited with error code {result.returncode} on attempt {dl_attempt}.", flush=True)
+                            
+                    except subprocess.TimeoutExpired:
+                        print(f"⚠️ FFMPEG hung up and hit the {DOWNLOAD_TIMEOUT}s timeout wall on attempt {dl_attempt}.", flush=True)
+                    except Exception as e:
+                        print(f"⚠️ Unexpected error during scraping/download phase: {e}", flush=True)
+                    
+                    print("⏳ Cool-down before hitting the host again...", flush=True)
+                    time.sleep(10)
+
+                if not download_success:
+                    if os.path.exists(local_temp_video): os.remove(local_temp_video)
+                    print(f"❌ FAILED: Unable to download payload for {display_name} after full link-reset retries.", flush=True)
+                    continue
+            else:
+                # Fallback standard Google Drive download logic
+                print(f"📥 Downloading video file payload asset from Drive...", flush=True)
+                try:
+                    request = service.files().get_media(fileId=drive_video_id)
+                    with io.FileIO(local_temp_video, 'wb') as f_handle:
+                        downloader = MediaIoBaseDownload(f_handle, request, chunksize=10*1024*1024)
+                        done = False
+                        while not done:
+                            status, done = downloader.next_chunk()
+                            if status:
+                                print(f"📥 Download Progress: {int(status.progress()*100)}%", end='\r', flush=True)
+                    print(f"\n💾 Download complete.", flush=True)
+                    download_success = True
+                except Exception as e:
+                    print(f"❌ Download Failed: {e}", flush=True)
+                    if os.path.exists(local_temp_video): os.remove(local_temp_video)
+                    continue
 
             # 5. Extract timeline spacing positions and paint the contact sheet grid image canvas
             print(f"📸 Generating screenlist image canvas layout...", flush=True)
             success = generate_local_contact_sheet(local_temp_video, local_output_image, cols=GRID_COLS, rows=GRID_ROWS)
             
-            # Remove video payload immediately after snapshot processing to free up disk space
             if os.path.exists(local_temp_video): 
                 os.remove(local_temp_video)
 
