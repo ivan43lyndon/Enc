@@ -22,10 +22,6 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg
-        pip install playwright beautifulsoup4 cloudscraper
-        pip install playwright yt-dlp
-        playwright install chromium
-        playwright install-deps chromium
 
     - name: Install Python Dependencies
       run: |
