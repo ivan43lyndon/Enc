@@ -362,7 +362,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                     '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
                     '-headers', headers,
                     '-i', resolved_link,
-                    '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
+                    '-c:v', 'copy', '-c:a', 'aac', '-b:a', '96k', '-movflags', 'faststart', temp_in
                 ]
                 
                 # 15 minutes max for a single file download stream step before we declare a hang
