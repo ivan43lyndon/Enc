@@ -92,7 +92,7 @@ def get_video_metadata(video_path):
             "size_mb": size_bytes / (1024 * 1024)
         }
     except Exception as e:
-        print(f"âŒ Error probing metadata: {e}")
+        print(f"❌ Error probing metadata: {e}")
         return None
 
 def generate_local_contact_sheet(video_path, output_img, cols=4, rows=4):
@@ -158,7 +158,7 @@ if __name__ == "__main__":
         service = get_drive_service()
         
         # 1. Fetch all video files directly from the Input Folder
-        print("ðŸ” Scanning Input Folder for video assets...", flush=True)
+        print("🔍 Scanning Input Folder for video assets...", flush=True)
         video_files = []
         page_token = None
         
@@ -183,12 +183,12 @@ if __name__ == "__main__":
                 break
 
         if not video_files:
-            print("âš ï¸ No video files discovered in the input folder. Exiting.", flush=True)
+            print("⚠️ No video files discovered in the input folder. Exiting.", flush=True)
             sys.exit(0)
 
         # Sort files alphabetically by name to keep execution predictable
         video_files.sort(key=lambda x: x['name'].lower())
-        print(f"ðŸŽ¯ Found {len(video_files)} video files to process.", flush=True)
+        print(f"🎯 Found {len(video_files)} video files to process.", flush=True)
 
         file_count = 0
 
@@ -199,7 +199,7 @@ if __name__ == "__main__":
             file_count += 1
             display_name = f"File [{file_count}/{len(video_files)}]"
             print(f"\n========================================")
-            print(f"ðŸŽ¬ Processing: {display_name}", flush=True)
+            print(f"🎬 Processing: {display_name}", flush=True)
 
             # Generate the corresponding output image name (e.g., "video.mp4" -> "video_preview.jpg")
             base_name, _ = os.path.splitext(video_name)
@@ -211,21 +211,21 @@ if __name__ == "__main__":
                 q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
                 check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
                 if check:
-                    print(f"â© SKIPPING: Preview grid already exists in Output Folder.", flush=True)
+                    print(f"⏭️ SKIPPING: Preview grid already exists in Output Folder.", flush=True)
                     continue
             except Exception as e:
-                print(f"âš ï¸ Skip Check API Error: {e}", flush=True)
+                print(f"⚠️ Skip Check API Error: {e}", flush=True)
 
             # Timeout break check safely before executing downloads
             if time.time() - START_TIME > TIMEOUT_LIMIT:
-                print("\nâ³ TIMEOUT REACHED. Exiting for workflow continuation...", flush=True)
+                print("\n⏳ TIMEOUT REACHED. Exiting for workflow continuation...", flush=True)
                 sys.exit(99)
 
             # 4. Stream down the target video locally to pull snapshots from
             local_temp_video = f"temp_{file_count}.mp4"
             local_output_image = f"grid_{file_count}.jpg"
 
-            print(f"ðŸ“¥ Downloading video file payload asset...", flush=True)
+            print(f"📥 Downloading video file payload asset...", flush=True)
             try:
                 request = service.files().get_media(fileId=drive_video_id)
                 with io.FileIO(local_temp_video, 'wb') as f_handle:
@@ -234,15 +234,15 @@ if __name__ == "__main__":
                     while not done:
                         status, done = downloader.next_chunk()
                         if status:
-                            print(f"ðŸ“¥ Download Progress: {int(status.progress()*100)}%", end='\r', flush=True)
-                print(f"\nðŸ’¾ Download complete.", flush=True)
+                            print(f"📥 Download Progress: {int(status.progress()*100)}%", end='\r', flush=True)
+                print(f"\n💾 Download complete.", flush=True)
             except Exception as e:
-                print(f"âŒ Download Failed: {e}", flush=True)
+                print(f"❌ Download Failed: {e}", flush=True)
                 if os.path.exists(local_temp_video): os.remove(local_temp_video)
                 continue
 
             # 5. Extract timeline spacing positions and paint the contact sheet grid image canvas
-            print(f"ðŸ“¸ Generating screenlist image canvas layout...", flush=True)
+            print(f"📸 Generating screenlist image canvas layout...", flush=True)
             success = generate_local_contact_sheet(local_temp_video, local_output_image, cols=GRID_COLS, rows=GRID_ROWS)
             
             # Remove video payload immediately after snapshot processing to free up disk space
@@ -250,12 +250,12 @@ if __name__ == "__main__":
                 os.remove(local_temp_video)
 
             if not success:
-                print(f"âŒ Failed to parse frames or video metadata metrics.", flush=True)
+                print(f"❌ Failed to parse frames or video metadata metrics.", flush=True)
                 if os.path.exists(local_output_image): os.remove(local_output_image)
                 continue
 
             # 6. Upload the finished grid preview frame asset to the output folder
-            print(f"ðŸ“¤ Uploading final grid preview sheet -> {display_name}", flush=True)
+            print(f"📤 Uploading final grid preview sheet -> {display_name}", flush=True)
             try:
                 media = MediaFileUpload(local_output_image, mimetype='image/jpeg', resumable=True)
                 request = service.files().create(
@@ -266,17 +266,17 @@ if __name__ == "__main__":
                 while response is None:
                     status, response = request.next_chunk()
                     if status:
-                        print(f"â¬†ï¸ Uploading Image: {int(status.progress() * 100)}%", end='\r', flush=True)
-                print(f"\nðŸš€ PREVIEW SHEET SAVED SUCCESSFUL!", flush=True)
+                        print(f"⬆️ Uploading Image: {int(status.progress() * 100)}%", end='\r', flush=True)
+                print(f"\n🚀 PREVIEW SHEET SAVED SUCCESSFUL!", flush=True)
             except Exception as e:
-                print(f"âš ï¸ Upload Failed: {e}", flush=True)
+                print(f"⚠️ Upload Failed: {e}", flush=True)
             finally:
                 if os.path.exists(local_output_image): 
                     os.remove(local_output_image)
 
-        print("\nâœ… ALL VIDEOS IN THE INPUT FOLDER PROCESSED.", flush=True)
+        print("\n✅ ALL VIDEOS IN THE INPUT FOLDER PROCESSED.", flush=True)
         sys.exit(0)
 
     except Exception as e:
-        print(f"ðŸ’¥ Critical Failure: {e}")
+        print(f"💥 Critical Failure: {e}")
         sys.exit(99)
