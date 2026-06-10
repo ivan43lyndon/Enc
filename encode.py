@@ -456,7 +456,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
     target_size_mb = get_mb_per_minute_ratio(min(src_h, TARGET_HEIGHT)) * (total_trimmed_dur / 60)
     if do_fade: mode = 'E'
-    elif mode == 'E' and target_size_mb >= (src_size * 0.9): mode = 'T'
+    elif mode == 'E' and target_size_mb >= (src_size * 0.9): mode = 
     bitrate = int((target_size_mb * 8192 - (96 * total_trimmed_dur)) / total_trimmed_dur) if total_trimmed_dur > 0 else 1000
 
     vf_base = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease,setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
@@ -467,7 +467,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         seg_out = f"seg_{file_num}_{i}.mp4"
         is_last = (i == len(segments) - 1)
         if mode == 'T':
-            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0', '-bsf:a', 'aac_adtstoasc',seg_out]
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0:v', '-map', '0:a', '-movflags', '+faststart']
         else:
             vf = vf_base
             cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
@@ -487,8 +487,18 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0', '-i', f"list_{file_num}.txt", '-c', 'copy', '-movflags', '+faststart', final_out])
         for s in segment_files: os.remove(s)
         os.remove(f"list_{file_num}.txt")
+    elif len(segment_files) == 1:
+        if os.path.exists(segment_files[0]):
+            if os.path.exists(final_out): os.remove(final_out)
+            os.rename(segment_files[0], final_out)
+        else:
+            print(f"❌ ERROR: Segment target file '{segment_files[0]}' was never generated.", flush=True)
+            if os.path.exists(temp_in): os.remove(temp_in)
+            return f"❌ FAILED: Missing output artifact", False
     else:
-        os.rename(segment_files[0], final_out)
+        print("❌ ERROR: No valid segments parsed.", flush=True)
+        if os.path.exists(temp_in): os.remove(temp_in)
+        return f"❌ FAILED: Empty partition array", False
 
     if hold_upload:
         print(f"📦 HOLDING: {display_name} | Group CT{ct_code} (Part {current_part} of {total_parts})", flush=True)
