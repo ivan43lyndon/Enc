@@ -456,7 +456,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
     target_size_mb = get_mb_per_minute_ratio(min(src_h, TARGET_HEIGHT)) * (total_trimmed_dur / 60)
     if do_fade: mode = 'E'
-    elif mode == 'E' and target_size_mb >= (src_size * 0.9): mode = 
+    elif mode == 'E' and target_size_mb >= (src_size * 0.9): mode = 'T'
     bitrate = int((target_size_mb * 8192 - (96 * total_trimmed_dur)) / total_trimmed_dur) if total_trimmed_dur > 0 else 1000
 
     vf_base = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease,setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
