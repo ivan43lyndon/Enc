@@ -476,7 +476,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                 cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             else:
                 cmd += ['-c:a', 'aac', '-b:a', '96k']
-            cmd += [seg_out]
+        cmd += [seg_out]
         
         run_ffmpeg_process(cmd, dur, display_name, target_size_mb, f"Segment {i}", batch_str)
         segment_files.append(seg_out)
