@@ -346,6 +346,58 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
         print(f"\n❌ Custom Native Downloader Thread Panic: {e}")
     return False
 
+# Place this right below the native_hls_downloader function block:
+
+async def native_progressive_downloader(url, session_cookies, target_output):
+    """
+    Safely downloads progressive non-HLS links (MP4/MKV) over a single robust connection
+    with real-time percentage progress tracking optimized for GitHub Runners.
+    """
+    custom_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Referer": url
+    }
+    if session_cookies:
+        custom_headers["Cookie"] = session_cookies
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=custom_headers, timeout=30) as response:
+                if response.status != 200:
+                    print(f"❌ Server returned HTTP Status {response.status}")
+                    return False
+
+                total_size = int(response.headers.get('content-length', 0))
+                
+                if total_size == 0:
+                    print("📋 Downloading stream (Unknown file size)...", flush=True)
+                else:
+                    size_mb = total_size / (1024 * 1024)
+                    print(f"📋 Total file size detected: {size_mb:.2f} MB", flush=True)
+
+                downloaded_bytes = 0
+                chunk_size = 1024 * 1024  # 1MB buffer chunks
+
+                with open(target_output, "wb") as out_f:
+                    async for chunk in response.content.iter_chunked(chunk_size):
+                        if not chunk:
+                            break
+                        out_f.write(chunk)
+                        downloaded_bytes += len(chunk)
+
+                        if total_size > 0:
+                            pct = int((downloaded_bytes / total_size) * 100)
+                            print(f"📥 Download Progress: {pct}% ({downloaded_bytes // (1024*1024)}MB / {total_size // (1024*1024)}MB)", end='\r', flush=True)
+                        else:
+                            print(f"📥 Downloaded: {downloaded_bytes // (1024*1024)} MB", end='\r', flush=True)
+
+                print(f"\n💾 Download complete. File saved cleanly.")
+                return True
+
+    except Exception as e:
+        print(f"\n❌ Progressive Downloader Error: {e}")
+    return False
+
 def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False, ct_code=None, current_part=0, total_parts=0):
 
     raw_input = file_id.strip()
@@ -477,32 +529,17 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                         print(f"⚠️ Native HLS downloader failed on attempt {dl_attempt}.", flush=True)
                         continue
 
-                # 🔁 LEAVE THE ORIGINAL FFMPEG DOWNBOARDS AS A FALLBACK (For non-HLS URLs)
-                headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-                if session_cookies:
-                    headers += f"Cookie: {session_cookies}\r\n"
-
-                raw_download_cmd = [
-                    'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-                    '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
-                    '-headers', headers,
-                    '-i', resolved_link,
-                    '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
-                ]
+                # Fallback to general file stream downloader using Method 2 (Progressive Native Streamer)
+                print(f"🚀 Initiating clean progressive file stream pipeline...", flush=True)
+                progressive_success = asyncio.run(native_progressive_downloader(resolved_link, session_cookies, temp_in))
                 
-                DOWNLOAD_TIMEOUT = 100 
-                print(f"📥 FFMPEG downloading stream (Timeout guard: {DOWNLOAD_TIMEOUT}s)...", flush=True)
-                result = subprocess.run(raw_download_cmd, timeout=DOWNLOAD_TIMEOUT)
-                
-                if result.returncode == 0 and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
+                if progressive_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
                     print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
                     download_success = True
-                    break 
+                    break
                 else:
-                    print(f"⚠️ FFMPEG exited with error code {result.returncode} on attempt {dl_attempt}.", flush=True)
+                    print(f"⚠️ Progressive stream acquisition failed on attempt {dl_attempt}.", flush=True)
                     
-            except subprocess.TimeoutExpired:
-                print(f"⚠️ FFMPEG hung up and hit the {DOWNLOAD_TIMEOUT}s timeout wall on attempt {dl_attempt}.", flush=True)
             except Exception as e:
                 print(f"⚠️ Unexpected error during scraping/download phase: {e}", flush=True)
             
