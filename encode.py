@@ -334,15 +334,37 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
             results = await asyncio.gather(*tasks)
 
         if all(results):
-            print(f"\n💾 Segment downloads complete. Assembling output...")
-            with open(target_output, "wb") as out_f:
+            print(f"\n💾 Segment downloads complete. Assembling raw stream chunks...")
+            raw_ts_path = target_output + ".ts"
+            
+            # Combine the chunks into a unified MPEG-TS container file first
+            with open(raw_ts_path, "wb") as out_f:
                 for idx in range(len(segments)):
                     chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
                     with open(chunk_path, "rb") as chunk_f:
                         out_f.write(chunk_f.read())
                     os.remove(chunk_path)
             os.rmdir(temp_dir)
-            return True
+            
+            print(f"🎬 Remuxing combined stream layout into a valid MP4 container...", flush=True)
+            remux_cmd = [
+                'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                '-i', raw_ts_path,
+                '-c', 'copy', '-movflags', '+faststart', target_output
+            ]
+            
+            remux_result = subprocess.run(remux_cmd)
+            
+            # Clean up the raw temporary transport stream file
+            if os.path.exists(raw_ts_path):
+                os.remove(raw_ts_path)
+                
+            if remux_result.returncode == 0:
+                print("✅ Stream containers converted successfully!")
+                return True
+            else:
+                print("❌ FFmpeg container remuxing failed.")
+                return False
     except Exception as e:
         print(f"\n❌ Custom Native Downloader Thread Panic: {e}")
     return False
