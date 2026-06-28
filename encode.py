@@ -16,6 +16,7 @@ from google.oauth2.credentials import Credentials as UserCredentials
 import asyncio
 from playwright.async_api import async_playwright
 from google.auth.transport.requests import Request
+from urllib.parse import urljoin
 from Crypto.Cipher import AES
 
 # Start a timer at the very beginning of the script
