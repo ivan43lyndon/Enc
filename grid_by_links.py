@@ -14,6 +14,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.credentials import Credentials as UserCredentials
 from google.auth.transport.requests import Request
+import m3u8
+from urllib.parse import urljoin
+from Crypto.Cipher import AES
 
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
@@ -30,6 +33,7 @@ CONFIG_FILE_ID = '1rE51zdRaXCIrxmWZhRjRZaKIuRvadDo3'
 # --- Grid Configuration ---
 GRID_COLS = 5
 GRID_ROWS = 8
+MAX_HLS_WORKERS = 10  # Maximum concurrent chunk downloads
 
 def get_drive_service():
     raw = DRIVE_TOKEN.strip()
@@ -91,6 +95,8 @@ async def resolve_any_link(input_url):
 
                 if "master" in u and ".m3u8" in u:
                     hunt["master"] = response.url
+                elif ".m3u8" in u:
+                    hunt["master"] = response.url
                 elif not any(bad in ctype for bad in ["image", "javascript", "css", "font", "html"]):
                     if size > hunt["big_size"]:
                         hunt["big_size"] = size
@@ -113,6 +119,101 @@ async def resolve_any_link(input_url):
             return final_link, cookie_str
         finally:
             await browser.close()
+
+# --- NATIVE NON-FFMPEG HLS STREAM ENGINE DOWNBOARDS ---
+async def fetch_hls_key(session, key_url, headers):
+    try:
+        async with session.get(key_url, headers=headers, timeout=10) as response:
+            if response.status == 200:
+                return await response.read()
+    except Exception as e:
+        print(f"❌ Failed to fetch decryption key from {key_url}: {e}")
+    return None
+
+async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, key_info=None):
+    async with semaphore:
+        target_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+        if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+            return True
+
+        for attempt in range(3):
+            try:
+                async with session.get(seg_url, headers=headers, timeout=20) as response:
+                    if response.status != 200:
+                        raise Exception(f"HTTP Status {response.status}")
+                    
+                    data = await response.read()
+                    
+                    if key_info and key_info.get("key"):
+                        iv = key_info["iv"] if key_info.get("iv") else idx.to_bytes(16, byteorder='big')
+                        cipher = AES.new(key_info["key"], AES.MODE_CBC, iv)
+                        data = cipher.decrypt(data)
+
+                    with open(target_path, "wb") as f:
+                        f.write(data)
+                    return True
+            except Exception:
+                if attempt == 2:
+                    return False
+                await asyncio.sleep(1)
+
+async def native_hls_downloader(m3u8_url, session_cookies, target_output):
+    try:
+        playlist = m3u8.load(m3u8_url)
+        if playlist.is_variant:
+            playlist.playlists.sort(key=lambda x: x.stream_info.bandwidth, reverse=True)
+            target_variant_url = urljoin(m3u8_url, playlist.playlists[0].uri)
+            playlist = m3u8.load(target_variant_url)
+            base_url = target_variant_url
+        else:
+            base_url = m3u8_url
+
+        segments = playlist.segments
+        if not segments:
+            return False
+
+        temp_dir = f"hls_temp_{int(time.time())}"
+        os.makedirs(temp_dir, exist_ok=True)
+        semaphore = asyncio.Semaphore(MAX_HLS_WORKERS)
+
+        custom_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": m3u8_url
+        }
+        if session_cookies:
+            custom_headers["Cookie"] = session_cookies
+
+        async with aiohttp.ClientSession() as session:
+            key_cache = {}
+            tasks = []
+            for idx, segment in enumerate(segments):
+                seg_url = urljoin(base_url, segment.uri)
+                key_info = None
+                
+                if segment.key and segment.key.method == "AES-128":
+                    key_url = urljoin(base_url, segment.key.uri)
+                    if key_url not in key_cache:
+                        key_data = await fetch_hls_key(session, key_url, custom_headers)
+                        iv_data = bytes.fromhex(segment.key.iv.strip('0x')) if segment.key.iv else None
+                        key_cache[key_url] = {"key": key_data, "iv": iv_data}
+                    key_info = key_cache[key_url]
+
+                tasks.append(download_hls_segment(session, idx, seg_url, semaphore, temp_dir, custom_headers, key_info))
+            
+            results = await asyncio.gather(*tasks)
+
+        if all(results):
+            with open(target_output, "wb") as out_f:
+                for idx in range(len(segments)):
+                    chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+                    with open(chunk_path, "rb") as chunk_f:
+                        out_f.write(chunk_f.read())
+                    os.remove(chunk_path)
+            os.rmdir(temp_dir)
+            return True
+    except Exception as e:
+        print(f"❌ Custom Native Downloader Thread Panic: {e}")
+    return False
 
 def get_video_metadata(video_path):
     try:
@@ -218,7 +319,6 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
         else:
             original_name = raw_input
 
-    # Grid output formatting context setup
     base_name, _ = os.path.splitext(original_name)
     output_image_name = f"{base_name}_preview.jpg"
     display_name = f"File {file_num}"
@@ -252,7 +352,7 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
     print(f"\n========================================")
     print(f"🎬 Processing Grid layout configuration for: {display_name}", flush=True)
     
-    # --- PHASE 1: DOWNLOAD ENGINE FROM ENCODE.PY ---
+    # --- PHASE 1: ASYNC DOWNLOAD ENGINE ---
     if source_input.startswith("http"):
         print(f"🕵️ Analyzing web source: {display_name}...", flush=True)
         max_download_attempts = 3
@@ -312,9 +412,7 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
                         
                     selected_file = file_list[target_index]
                     resolved_link = selected_file["link"]
-                    headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-                    if session_cookies:
-                        headers += f"Cookie: {session_cookies}\r\n"
+                    session_cookies = session_cookies
                 else:
                     resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
                     if not resolved_link:
@@ -322,9 +420,22 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
                         time.sleep(5)
                         continue
 
-                    headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-                    if session_cookies:
-                        headers += f"Cookie: {session_cookies}\r\n"
+                # 🛑 DETECT HLS METHOD AND BYPASS FFMPEG IF DISCOVERED
+                if ".m3u8" in resolved_link.lower() or "master" in resolved_link.lower():
+                    print(f"🚀 HLS Stream Detected! Initiating non-FFmpeg Asynchronous Downloader pipeline...", flush=True)
+                    native_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in))
+                    if native_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
+                        print(f"✅ Successfully downloaded HLS stream on attempt {dl_attempt}!", flush=True)
+                        download_success = True
+                        break
+                    else:
+                        print(f"⚠️ Native HLS downloader failed on attempt {dl_attempt}.", flush=True)
+                        continue
+
+                # Fallback to general file stream downloader (for non-HLS links)
+                headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                if session_cookies:
+                    headers += f"Cookie: {session_cookies}\r\n"
 
                 raw_download_cmd = [
                     'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
@@ -426,10 +537,12 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
     return True
 
 if __name__ == "__main__":
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        
     try:
         service = get_drive_service()
         
-        # Pull configuration file from Cloud exactly like encode.py
         fh = io.BytesIO()
         MediaIoBaseDownload(fh, service.files().get_media(fileId=CONFIG_FILE_ID)).next_chunk()
         config_lines = fh.getvalue().decode().splitlines()
@@ -474,18 +587,14 @@ if __name__ == "__main__":
             file_count += 1
             ct_code = entry['ct_code']
             
-            # Cascade Skip Group Check matching encode.py context mapping
             if ct_code and ct_code in skipped_ct_tags:
                 print(f"⏩ AUTOMATICALLY SKIPPING: entry [{file_count}] because Group CT{ct_code} was marked complete/skipped.", flush=True)
                 continue
 
             is_part_of_group = ct_code is not None
             
-            # For grid creation, each individual segment map gets its layout mapped,
-            # but we pass flag markers just like encode to keep loop parity clean.
             try:
                 if is_part_of_group and ct_total_counts[ct_code] > 1:
-                    # In a joined group, use the base line file info directly for skip checks
                     clean_part = entry['line'].split("---")[0].strip()
                     if "##" in clean_part:
                         raw_name = clean_part.split("##")[1].strip()
@@ -496,7 +605,6 @@ if __name__ == "__main__":
                     output_image_name = f"{base_name}_preview.jpg"
                     safe_q_name = output_image_name.replace("'", "\\'")
                     
-                    # Group Preview Existing Asset Skip Validation Bypass
                     q_check = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
                     check = service.files().list(q=q_check, fields="files(id)").execute().get('files', [])
                     if check:
@@ -504,7 +612,6 @@ if __name__ == "__main__":
                         skipped_ct_tags.add(ct_code)
                         continue
 
-                # Run grid generation targeting the extracted configuration asset source
                 process_grid_for_entry(
                     service, 
                     entry['source'], 
