@@ -29,6 +29,7 @@ jobs:
           pip install playwright yt-dlp
           playwright install chromium
           playwright install-deps chromium
+          pip install m3u8 pycryptodome aiohttp
 
       - name: Install Python Dependencies
         run: |
