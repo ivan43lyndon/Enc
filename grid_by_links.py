@@ -7,6 +7,7 @@ import json
 import re
 import warnings
 import asyncio
+import aiohttp
 from collections import defaultdict
 from PIL import Image, ImageDraw, ImageFont
 from playwright.async_api import async_playwright
