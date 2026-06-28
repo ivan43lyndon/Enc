@@ -7,6 +7,8 @@ import io
 import json
 import re
 import warnings
+import aiohttp          # 👈 Added
+import m3u8             # 👈 Added
 from subprocess import Popen, PIPE, STDOUT
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
@@ -14,6 +16,7 @@ from google.oauth2.credentials import Credentials as UserCredentials
 import asyncio
 from playwright.async_api import async_playwright
 from google.auth.transport.requests import Request
+from Crypto.Cipher import AES
 
 # Start a timer at the very beginning of the script
 START_TIME = time.time()
@@ -36,6 +39,7 @@ TARGET_WIDTH = 1280
 TARGET_HEIGHT = 720
 TARGET_CRF_VALUE = 22
 FADE_DURATION = 1
+MAX_HLS_WORKERS = 10
 
 def request_ownership_transfer(service, file_id):
     """
@@ -232,6 +236,116 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
         print(f"❌ FFMPEG FAILED on {display_name}", flush=True)
     return process.returncode == 0
 
+# --- NATIVE NON-FFMPEG HLS DOWNLOAD ENGINE ---
+async def fetch_hls_key(session, key_url, headers):
+    try:
+        async with session.get(key_url, headers=headers, timeout=10) as response:
+            if response.status == 200:
+                return await response.read()
+    except Exception as e:
+        print(f"❌ Failed to fetch decryption key from {key_url}: {e}")
+    return None
+
+async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, progress_tracker, key_info=None):
+    async with semaphore:
+        target_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+        if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+            progress_tracker["completed"] += 1
+            pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
+            print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
+            return True
+
+        for attempt in range(3):
+            try:
+                async with session.get(seg_url, headers=headers, timeout=20) as response:
+                    if response.status != 200:
+                        raise Exception(f"HTTP Status {response.status}")
+                    
+                    data = await response.read()
+                    
+                    if key_info and key_info.get("key"):
+                        iv = key_info["iv"] if key_info.get("iv") else idx.to_bytes(16, byteorder='big')
+                        cipher = AES.new(key_info["key"], AES.MODE_CBC, iv)
+                        data = cipher.decrypt(data)
+
+                    with open(target_path, "wb") as f:
+                        f.write(data)
+                    
+                    progress_tracker["completed"] += 1
+                    pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
+                    print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
+                    return True
+            except Exception:
+                if attempt == 2:
+                    return False
+                await asyncio.sleep(1)
+
+async def native_hls_downloader(m3u8_url, session_cookies, target_output):
+    try:
+        playlist = m3u8.load(m3u8_url)
+        if playlist.is_variant:
+            playlist.playlists.sort(key=lambda x: x.stream_info.bandwidth, reverse=True)
+            target_variant_url = urljoin(m3u8_url, playlist.playlists[0].uri)
+            playlist = m3u8.load(target_variant_url)
+            base_url = target_variant_url
+        else:
+            base_url = m3u8_url
+
+        segments = playlist.segments
+        if not segments:
+            return False
+
+        temp_dir = f"hls_temp_{int(time.time())}"
+        os.makedirs(temp_dir, exist_ok=True)
+        semaphore = asyncio.Semaphore(MAX_HLS_WORKERS)
+
+        custom_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": m3u8_url
+        }
+        if session_cookies:
+            custom_headers["Cookie"] = session_cookies
+
+        progress_tracker = {
+            "completed": 0,
+            "total": len(segments)
+        }
+
+        print(f"📋 Found {progress_tracker['total']} segments to download.", flush=True)
+
+        async with aiohttp.ClientSession() as session:
+            key_cache = {}
+            tasks = []
+            for idx, segment in enumerate(segments):
+                seg_url = urljoin(base_url, segment.uri)
+                key_info = None
+                
+                if segment.key and segment.key.method == "AES-128":
+                    key_url = urljoin(base_url, segment.key.uri)
+                    if key_url not in key_cache:
+                        key_data = await fetch_hls_key(session, key_url, custom_headers)
+                        iv_data = bytes.fromhex(segment.key.iv.strip('0x')) if segment.key.iv else None
+                        key_cache[key_url] = {"key": key_data, "iv": iv_data}
+                    key_info = key_cache[key_url]
+
+                tasks.append(download_hls_segment(session, idx, seg_url, semaphore, temp_dir, custom_headers, progress_tracker, key_info))
+            
+            results = await asyncio.gather(*tasks)
+
+        if all(results):
+            print(f"\n💾 Segment downloads complete. Assembling output...")
+            with open(target_output, "wb") as out_f:
+                for idx in range(len(segments)):
+                    chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+                    with open(chunk_path, "rb") as chunk_f:
+                        out_f.write(chunk_f.read())
+                    os.remove(chunk_path)
+            os.rmdir(temp_dir)
+            return True
+    except Exception as e:
+        print(f"\n❌ Custom Native Downloader Thread Panic: {e}")
+    return False
+
 def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False, ct_code=None, current_part=0, total_parts=0):
 
     raw_input = file_id.strip()
@@ -352,11 +466,22 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                         time.sleep(5)
                         continue
 
-                    headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-                    if session_cookies:
-                        headers += f"Cookie: {session_cookies}\r\n"
+                if ".m3u8" in resolved_link.lower() or "master" in resolved_link.lower():
+                    print(f"🚀 HLS Stream Detected! Initiating non-FFmpeg Asynchronous Downloader pipeline...", flush=True)
+                    native_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in))
+                    if native_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
+                        print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
+                        download_success = True
+                        break
+                    else:
+                        print(f"⚠️ Native HLS downloader failed on attempt {dl_attempt}.", flush=True)
+                        continue
 
-                # --- PHASE 2: HAND OFF TO FFMPEG WITH TIMEOUT PROTECTION ---
+                # 🔁 LEAVE THE ORIGINAL FFMPEG DOWNBOARDS AS A FALLBACK (For non-HLS URLs)
+                headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
+                if session_cookies:
+                    headers += f"Cookie: {session_cookies}\r\n"
+
                 raw_download_cmd = [
                     'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
                     '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
@@ -365,16 +490,14 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                     '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
                 ]
                 
-                # 15 minutes max for a single file download stream step before we declare a hang
                 DOWNLOAD_TIMEOUT = 100 
-                
                 print(f"📥 FFMPEG downloading stream (Timeout guard: {DOWNLOAD_TIMEOUT}s)...", flush=True)
                 result = subprocess.run(raw_download_cmd, timeout=DOWNLOAD_TIMEOUT)
                 
                 if result.returncode == 0 and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
                     print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
                     download_success = True
-                    break # Break out of the retry loop, we got a good file!
+                    break 
                 else:
                     print(f"⚠️ FFMPEG exited with error code {result.returncode} on attempt {dl_attempt}.", flush=True)
                     
@@ -529,6 +652,8 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
 if __name__ == "__main__":
     from collections import defaultdict
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         service = get_drive_service()
         fh = io.BytesIO()
