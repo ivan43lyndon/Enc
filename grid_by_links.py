@@ -131,10 +131,15 @@ async def fetch_hls_key(session, key_url, headers):
         print(f"❌ Failed to fetch decryption key from {key_url}: {e}")
     return None
 
-async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, key_info=None):
+async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, progress_tracker, key_info=None):
     async with semaphore:
         target_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+        
+        # If the file exists, we still count it as completed progress (for safety/resumes)
         if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+            progress_tracker["completed"] += 1
+            pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
+            print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
             return True
 
         for attempt in range(3):
@@ -152,6 +157,11 @@ async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, heade
 
                     with open(target_path, "wb") as f:
                         f.write(data)
+                    
+                    # Increment progress safely and print updated percentage
+                    progress_tracker["completed"] += 1
+                    pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
+                    print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
                     return True
             except Exception:
                 if attempt == 2:
@@ -184,6 +194,14 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
         if session_cookies:
             custom_headers["Cookie"] = session_cookies
 
+        # Initialize progress tracker dictionary
+        progress_tracker = {
+            "completed": 0,
+            "total": len(segments)
+        }
+
+        print(f"📋 Found {progress_tracker['total']} segments to download.", flush=True)
+
         async with aiohttp.ClientSession() as session:
             key_cache = {}
             tasks = []
@@ -199,11 +217,14 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
                         key_cache[key_url] = {"key": key_data, "iv": iv_data}
                     key_info = key_cache[key_url]
 
-                tasks.append(download_hls_segment(session, idx, seg_url, semaphore, temp_dir, custom_headers, key_info))
+                # Pass progress_tracker reference down into each worker task
+                tasks.append(download_hls_segment(session, idx, seg_url, semaphore, temp_dir, custom_headers, progress_tracker, key_info))
             
             results = await asyncio.gather(*tasks)
 
         if all(results):
+            # Print a fresh line so "Download complete" doesn't overwrite the 100% string
+            print(f"\n💾 Segment downloads complete. Assembling output...")
             with open(target_output, "wb") as out_f:
                 for idx in range(len(segments)):
                     chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
@@ -213,7 +234,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
             os.rmdir(temp_dir)
             return True
     except Exception as e:
-        print(f"❌ Custom Native Downloader Thread Panic: {e}")
+        print(f"\n❌ Custom Native Downloader Thread Panic: {e}")
     return False
 
 def get_video_metadata(video_path):
