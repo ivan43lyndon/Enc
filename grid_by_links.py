@@ -15,8 +15,9 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from google.oauth2.credentials import Credentials as UserCredentials
 from google.auth.transport.requests import Request
-import m3u8
-from urllib.parse import urljoin
+import aiohttp          # 👈 Added
+import m3u8             # 👈 Added
+from urllib.parse import urljoin  # 👈 Added
 from Crypto.Cipher import AES
 
 # Start a timer at the very beginning of the script
@@ -223,18 +224,46 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
             results = await asyncio.gather(*tasks)
 
         if all(results):
-            # Print a fresh line so "Download complete" doesn't overwrite the 100% string
-            print(f"\n💾 Segment downloads complete. Assembling output...")
-            with open(target_output, "wb") as out_f:
+            print(f"\n💾 Assembly stream layout into a valid container...")
+            raw_ts_path = target_output + ".ts"
+            with open(raw_ts_path, "wb") as out_f:
                 for idx in range(len(segments)):
                     chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
-                    with open(chunk_path, "rb") as chunk_f:
-                        out_f.write(chunk_f.read())
+                    with open(chunk_path, "rb") as chunk_f: out_f.write(chunk_f.read())
                     os.remove(chunk_path)
             os.rmdir(temp_dir)
-            return True
-    except Exception as e:
-        print(f"\n❌ Custom Native Downloader Thread Panic: {e}")
+            remux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'fatal', '-y', '-i', raw_ts_path, '-c', 'copy', '-movflags', '+faststart', target_output]
+            remux_result = subprocess.run(remux_cmd)
+            if os.path.exists(raw_ts_path): os.remove(raw_ts_path)
+            return remux_result.returncode == 0
+    except Exception as e: print(f"\n❌ HLS Downloader Crash: {e}")
+    return False
+
+async def native_progressive_downloader(url, session_cookies, target_output):
+    custom_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Referer": url}
+    if session_cookies: custom_headers["Cookie"] = session_cookies
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, headers=custom_headers, timeout=30) as response:
+                if response.status != 200: return False
+                total_size = int(response.headers.get('content-length', 0))
+                if total_size == 0: print("📋 Downloading progressive stream (Unknown file size)...", flush=True)
+                else: print(f"📋 Progressive file size detected: {total_size / (1024 * 1024):.2f} MB", flush=True)
+                downloaded_bytes = 0
+                chunk_size = 1024 * 1024
+                with open(target_output, "wb") as out_f:
+                    async for chunk in response.content.iter_chunked(chunk_size):
+                        if not chunk: break
+                        out_f.write(chunk)
+                        downloaded_bytes += len(chunk)
+                        if total_size > 0:
+                            pct = int((downloaded_bytes / total_size) * 100)
+                            print(f"📥 Download Progress: {pct}% ({downloaded_bytes // (1024*1024)}MB / {total_size // (1024*1024)}MB)", end='\r', flush=True)
+                        else:
+                            print(f"📥 Downloaded: {downloaded_bytes // (1024*1024)} MB", end='\r', flush=True)
+                print(f"\n💾 Progressive stream acquisition complete.")
+                return True
+    except Exception as e: print(f"\n❌ Progressive Downloader Error: {e}")
     return False
 
 def get_video_metadata(video_path):
@@ -287,7 +316,7 @@ def generate_local_contact_sheet(video_path, output_img, cols=4, rows=4):
         temp_thumb = f"temp_thumb_{i}.jpg"
         
         ffmpeg_cmd = [
-            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+            'ffmpeg', '-hide_banner', '-loglevel', 'fatal', '-y',
             '-ss', str(timestamp), '-i', video_path, '-vframes', '1', '-q:v', '3', temp_thumb
         ]
         subprocess.run(ffmpeg_cmd)
@@ -442,44 +471,20 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
                         time.sleep(5)
                         continue
 
-                # 🛑 DETECT HLS METHOD AND BYPASS FFMPEG IF DISCOVERED
                 if ".m3u8" in resolved_link.lower() or "master" in resolved_link.lower():
-                    print(f"🚀 HLS Stream Detected! Initiating non-FFmpeg Asynchronous Downloader pipeline...", flush=True)
-                    native_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in))
-                    if native_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
-                        print(f"✅ Successfully downloaded HLS stream on attempt {dl_attempt}!", flush=True)
-                        download_success = True
-                        break
-                    else:
-                        print(f"⚠️ Native HLS downloader failed on attempt {dl_attempt}.", flush=True)
-                        continue
+                    print(f"🚀 HLS Stream Detected! Running Asynchronous Engine...", flush=True)
+                    download_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in))
+                else:
+                    print(f"🚀 Non-M3U8 Stream Detected! Running Progressive Engine...", flush=True)
+                    download_success = asyncio.run(native_progressive_downloader(resolved_link, session_cookies, temp_in))
 
-                # Fallback to general file stream downloader (for non-HLS links)
-                headers = f"Referer: {source_input}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-                if session_cookies:
-                    headers += f"Cookie: {session_cookies}\r\n"
-
-                raw_download_cmd = [
-                    'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-                    '-reconnect', '1', '-reconnect_at_eof', '1', '-reconnect_streamed', '1',
-                    '-headers', headers,
-                    '-i', resolved_link,
-                    '-c', 'copy', '-bsf:a', 'aac_adtstoasc', '-movflags', 'faststart', temp_in
-                ]
-                
-                DOWNLOAD_TIMEOUT = 100 
-                print(f"📥 FFMPEG downloading stream (Timeout guard: {DOWNLOAD_TIMEOUT}s)...", flush=True)
-                result = subprocess.run(raw_download_cmd, timeout=DOWNLOAD_TIMEOUT)
-                
-                if result.returncode == 0 and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
+                if download_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
                     print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
-                    download_success = True
                     break
                 else:
-                    print(f"⚠️ FFMPEG exited with error code {result.returncode} on attempt {dl_attempt}.", flush=True)
+                    print(f"⚠️ Native stream acquisition failed on attempt {dl_attempt}.", flush=True)
+                    download_success = False
                     
-            except subprocess.TimeoutExpired:
-                print(f"⚠️ FFMPEG hung up and hit the {DOWNLOAD_TIMEOUT}s timeout wall on attempt {dl_attempt}.", flush=True)
             except Exception as e:
                 print(f"⚠️ Unexpected error during scraping/download phase: {e}", flush=True)
             
