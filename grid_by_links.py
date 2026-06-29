@@ -546,18 +546,39 @@ def process_grid_for_entry(service, file_id, file_num, skip_api_check=False):
     # --- PHASE 3: UPLOAD DESTINATION ROUTINE ---
     print(f"📤 Uploading: \"{display_name}\" -> Output folder...", flush=True)
     try:
-        media = MediaFileUpload(local_output_image, mimetype='image/jpeg', resumable=True)
-        request = service.files().create(body={'name': output_image_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
-        response = None
-        while response is None:
+        max_upload_attempts = 3
+        upload_success = False
+
+        for upload_attempt in range(1, max_upload_attempts + 1):
             try:
-                status, response = request.next_chunk()
-                if status:
-                    print(f"⬆️ Image Upload Progress: {int(status.progress() * 100)}%", end='\r', flush=True)
-            except Exception as e:
-                print(f"⚠️ Upload flicker encountered: {e}. Recovering...", flush=True)
+                media = MediaFileUpload(local_output_image, mimetype='image/jpeg', resumable=True)
+                request = service.files().create(body={'name': output_image_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
+                response = None
+                
+                while response is None:
+                    try:
+                        status, response = request.next_chunk()
+                        if status:
+                            print(f"⬆️ Image Upload Progress: {int(status.progress() * 100)}%", end='\r', flush=True)
+                    except Exception as chunk_err:
+                        # If the session is dead (410) or Google had a 500 break, escalate it to the outer loop to get a fresh session
+                        err_str = str(chunk_err)
+                        if "410" in err_str or "500" in err_str or "Gone" in err_str:
+                            print(f"\n⚠️ Session broken ({err_str.strip()}). Re-initializing fresh request link...")
+                            raise chunk_err
+                        
+                        print(f"\n⚠️ Minor upload flicker: {chunk_err}. Retrying chunk...", flush=True)
+                        time.sleep(3)
+                
+                upload_success = True
+                print(f"\n🚀 PREVIEW SHEET SAVED SUCCESSFULLY!", flush=True)
+                break  # Upload complete, break outer retry loop
+                
+            except Exception as outer_err:
+                if upload_attempt == max_upload_attempts:
+                    print(f"\n❌ Permanent failure uploading preview sheet after {max_upload_attempts} session builds.")
+                    raise outer_err
                 time.sleep(5)
-        print(f"\n🚀 PREVIEW SHEET SAVED SUCCESSFUL!", flush=True)
     finally:
         if os.path.exists(local_output_image): 
             os.remove(local_output_image)
