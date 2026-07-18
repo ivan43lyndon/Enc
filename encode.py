@@ -281,7 +281,7 @@ async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, heade
                     return False
                 await asyncio.sleep(1)
 
-async def native_hls_downloader(m3u8_url, session_cookies, target_output):
+async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_num):
     try:
         playlist = m3u8.load(m3u8_url)
         if playlist.is_variant:
@@ -296,10 +296,9 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
         if not segments:
             return False
 
-        clean_name = os.path.splitext(os.path.basename(target_output))[0]
-        temp_dir = f"hls_temp_{clean_name}"
+        temp_dir = f"hls_temp_file_{file_num}"
         os.makedirs(temp_dir, exist_ok=True)
-        semaphore = asyncio.Semaphore(MAX_HLS_WORKERS)
+        semaphore = asyncio.Semaphore(MAX_HLS_WORKERS
 
         custom_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -308,12 +307,19 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
         if session_cookies:
             custom_headers["Cookie"] = session_cookies
 
+        existing_completed = 0
+        for idx in range(len(segments)):
+            check_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+            if os.path.exists(check_path) and os.path.getsize(check_path) > 0:
+                existing_completed += 1
+
         progress_tracker = {
-            "completed": 0,
+            "completed": existing_completed,
             "total": len(segments)
         }
 
-        print(f"📋 Found {progress_tracker['total']} segments to download.", flush=True)
+        if existing_completed > 0:
+            print(f"📋 Found {progress_tracker['total']} segments. Resuming with {existing_completed} chunks already cached locally!", flush=True)
 
         async with aiohttp.ClientSession() as session:
             key_cache = {}
@@ -557,7 +563,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             print(f"📥 [Download Connection Attempt {dl_attempt}/{max_dl_attempts}] streaming data...", flush=True)
             try:
                 if ".m3u8" in resolved_link.lower() or "master" in resolved_link.lower():
-                    native_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in))
+                    native_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in, file_num))
                     if native_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
                         download_success = True
                         break
