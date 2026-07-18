@@ -610,7 +610,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
         # --- PHASE 2: RESUMABLE DOWNLOAD PIPELINE ---
         # This loop retries the download inside the *same* scraping session, preserving local files
-        max_dl_attempts = 5
+        max_dl_attempts = 10
         download_success = False
         
         for dl_attempt in range(1, max_dl_attempts + 1):
