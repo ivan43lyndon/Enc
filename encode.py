@@ -296,7 +296,8 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
         if not segments:
             return False
 
-        temp_dir = f"hls_temp_{int(time.time())}"
+        clean_name = os.path.splitext(os.path.basename(target_output))[0]
+        temp_dir = f"hls_temp_{clean_name}"
         os.makedirs(temp_dir, exist_ok=True)
         semaphore = asyncio.Semaphore(MAX_HLS_WORKERS)
 
@@ -373,8 +374,8 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output):
 
 async def native_progressive_downloader(url, session_cookies, target_output):
     """
-    Safely downloads progressive non-HLS links (MP4/MKV) over a single robust connection
-    with real-time percentage progress tracking optimized for GitHub Runners.
+    Downloads progressive links (MP4/MKV) with HTTP Range support to resume 
+    interrupted downloads instead of restarting from 0%.
     """
     custom_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -383,25 +384,39 @@ async def native_progressive_downloader(url, session_cookies, target_output):
     if session_cookies:
         custom_headers["Cookie"] = session_cookies
 
+    # Check for existing partial download progress
+    resume_byte = 0
+    if os.path.exists(target_output):
+        resume_byte = os.path.getsize(target_output)
+        if resume_byte > 0:
+            custom_headers["Range"] = f"bytes={resume_byte}-"
+            print(f"🔄 Resuming progressive download from byte {resume_byte // (1024*1024)}MB...", flush=True)
+
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=custom_headers, timeout=30) as response:
-                if response.status != 200:
+                # 200 = Fresh download, 206 = Successful partial/resume content
+                if response.status not in [200, 206]:
                     print(f"❌ Server returned HTTP Status {response.status}")
                     return False
 
-                total_size = int(response.headers.get('content-length', 0))
+                # Calculate total size correctly even when resuming
+                content_length = int(response.headers.get('content-length', 0))
+                total_size = content_length + resume_byte
                 
                 if total_size == 0:
                     print("📋 Downloading stream (Unknown file size)...", flush=True)
                 else:
                     size_mb = total_size / (1024 * 1024)
-                    print(f"📋 Total file size detected: {size_mb:.2f} MB", flush=True)
+                    if resume_byte == 0:
+                        print(f"📋 Total file size detected: {size_mb:.2f} MB", flush=True)
 
-                downloaded_bytes = 0
+                downloaded_bytes = resume_byte
                 chunk_size = 1024 * 1024  # 1MB buffer chunks
 
-                with open(target_output, "wb") as out_f:
+                # Use "ab" mode to append to the existing file
+                file_mode = "ab" if resume_byte > 0 else "wb"
+                with open(target_output, file_mode) as out_f:
                     async for chunk in response.content.iter_chunked(chunk_size):
                         if not chunk:
                             break
@@ -468,34 +483,26 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     if source_input.startswith("http"):
         print(f"🕵️ Analyzing web source: {display_name}...", flush=True)
         
-        # We will retry the ENTIRE scraping + downloading process up to 3 times
-        max_download_attempts = 3
-        download_success = False
-
-        for dl_attempt in range(1, max_download_attempts + 1):
-            print(f"🔄 [Attempt {dl_attempt}/{max_download_attempts}] Scraping fresh link and starting download...", flush=True)
-            
-            # Clean up any leftover dead file from a previous failed attempt
-            if os.path.exists(temp_in):
-                os.remove(temp_in)
-
-            bracket_match = re.match(r"(.+?)\[(\d+)\]$", source_input)
-            
-            # --- PHASE 1: SCRAPE THE LINK ---
+        resolved_link = None
+        session_cookies = ""
+        bracket_match = re.match(r"(.+?)\[(\d+)\]$", source_input)
+        
+        # --- PHASE 1: LINK ACQUISITION RETRY LOOP ---
+        max_scrape_attempts = 3
+        for scrape_attempt in range(1, max_scrape_attempts + 1):
+            print(f"🔄 [Scrape Attempt {scrape_attempt}/{max_scrape_attempts}] Resolving fresh stream link...", flush=True)
             try:
                 if bracket_match:
                     folder_url = bracket_match.group(1)
                     target_index = int(bracket_match.group(2)) - 1
                     
                     file_list = []
-                    session_cookies = ""
-                    
                     async def scrape_folder():
                         nonlocal session_cookies
                         fl = []
                         async with async_playwright() as p:
                             browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
-                            context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                            context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
                             page = await context.new_page()
                             
                             async def handle_response(resp):
@@ -523,59 +530,54 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                         return fl
 
                     file_list = asyncio.run(scrape_folder())
-                    
-                    if not file_list or target_index >= len(file_list):
-                        print(f"⚠️ Scraping failed or index out of bounds on attempt {dl_attempt}.", flush=True)
-                        time.sleep(5)
-                        continue
-                        
-                    selected_file = file_list[target_index]
-                    resolved_link = selected_file["link"]
-                    headers = f"Referer: {folder_url}\r\nUser-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n"
-                    if session_cookies:
-                        headers += f"Cookie: {session_cookies}\r\n"
+                    if file_list and target_index < len(file_list):
+                        resolved_link = file_list[target_index]["link"]
+                        break
                 else:
                     resolved_link, session_cookies = asyncio.run(resolve_any_link(source_input))
-                    if not resolved_link:
-                        print(f"⚠️ Playwright failed to resolve stream on attempt {dl_attempt}.", flush=True)
-                        time.sleep(5)
-                        continue
+                    if resolved_link:
+                        break
+                        
+            except Exception as e:
+                print(f"⚠️ Scrape attempt failed: {e}", flush=True)
+            
+            if not resolved_link:
+                time.sleep(5)
 
+        if not resolved_link:
+            print(f"❌ FAILED: Unable to resolve stream link for {display_name} after {max_scrape_attempts} attempts.", flush=True)
+            return f"❌ FAILED: Link resolution exhausted", False
+
+        # --- PHASE 2: RESUMABLE DOWNLOAD PIPELINE ---
+        # This loop retries the download inside the *same* scraping session, preserving local files
+        max_dl_attempts = 5
+        download_success = False
+        
+        for dl_attempt in range(1, max_dl_attempts + 1):
+            print(f"📥 [Download Connection Attempt {dl_attempt}/{max_dl_attempts}] streaming data...", flush=True)
+            try:
                 if ".m3u8" in resolved_link.lower() or "master" in resolved_link.lower():
-                    print(f"🚀 HLS Stream Detected! Initiating non-FFmpeg Asynchronous Downloader pipeline...", flush=True)
                     native_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in))
                     if native_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
-                        print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
                         download_success = True
                         break
-                    else:
-                        print(f"⚠️ Native HLS downloader failed on attempt {dl_attempt}.", flush=True)
-                        continue
-
-                # Fallback to general file stream downloader using Method 2 (Progressive Native Streamer)
-                print(f"🚀 Initiating clean progressive file stream pipeline...", flush=True)
-                progressive_success = asyncio.run(native_progressive_downloader(resolved_link, session_cookies, temp_in))
-                
-                if progressive_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
-                    print(f"✅ Successfully grabbed file on attempt {dl_attempt}!", flush=True)
-                    download_success = True
-                    break
                 else:
-                    print(f"⚠️ Progressive stream acquisition failed on attempt {dl_attempt}.", flush=True)
-                    
-            except Exception as e:
-                print(f"⚠️ Unexpected error during scraping/download phase: {e}", flush=True)
+                    progressive_success = asyncio.run(native_progressive_downloader(resolved_link, session_cookies, temp_in))
+                    if progressive_success and os.path.exists(temp_in) and os.path.getsize(temp_in) > 10000:
+                        download_success = True
+                        break
+            except Exception as dl_err:
+                print(f"⚠️ Stream connection dropped: {dl_err}", flush=True)
             
-            # If we get here, the attempt failed. Wait a bit before resetting.
-            print("⏳ Cool-down before hitting the host again...", flush=True)
-            time.sleep(10)
+            print("⏳ Reconnecting stream to resume pipeline in 5 seconds...", flush=True)
+            time.sleep(5)
 
-        # If all attempts completely tanked, drop out of the file processing entirely
         if not download_success:
+            # Only scrub the file if we completely give up on all retries
             if os.path.exists(temp_in):
                 os.remove(temp_in)
-            print(f"❌ FAILED: Unable to download {display_name} after {max_download_attempts} full link-reset retries.", flush=True)
-            return f"❌ FAILED: All download retries exhausted", False
+            print(f"❌ FAILED: Stream download failed to complete for {display_name}.", flush=True)
+            return f"❌ FAILED: Download connection exhausted", False
             
     elif not source_input.startswith("http"):
         drive_id = None
