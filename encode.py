@@ -298,7 +298,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
 
         temp_dir = f"hls_temp_file_{file_num}"
         os.makedirs(temp_dir, exist_ok=True)
-        semaphore = asyncio.Semaphore(MAX_HLS_WORKERS
+        semaphore = asyncio.Semaphore(MAX_HLS_WORKERS)
 
         custom_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
