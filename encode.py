@@ -334,7 +334,6 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         if not segments:
             return False
 
-        # 🎯 Locked folder name keeps downstream logic intact but isolates batch files
         temp_dir = f"hls_temp_file_{file_num}"
         os.makedirs(temp_dir, exist_ok=True)
         semaphore = asyncio.Semaphore(MAX_HLS_WORKERS)
@@ -346,7 +345,6 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         if session_cookies:
             custom_headers["Cookie"] = session_cookies
 
-        # 🎯 FIX: Scan what is already on disk *before* launching the download loop
         existing_completed = 0
         for idx in range(len(segments)):
             check_path = os.path.join(temp_dir, f"{idx:06d}.ts")
@@ -354,7 +352,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
                 existing_completed += 1
 
         progress_tracker = {
-            "completed": existing_completed,  # Start tracking exactly from what we already have
+            "completed": existing_completed,
             "total": len(segments)
         }
 
@@ -363,7 +361,6 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         else:
             print(f"\n📋 Found {progress_tracker['total']} segments to download.", flush=True)
 
-        # Handle Encryption Key URI Resolution if applicable
         key_info = None
         if playlist.keys and playlist.keys[0]:
             key_uri = urljoin(base_url, playlist.keys[0].uri)
@@ -374,7 +371,6 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
                         iv_bytes = playlist.keys[0].iv.encode() if playlist.keys[0].iv else None
                         key_info = {"key": key_bytes, "iv": iv_bytes}
 
-        # Run the concurrent download loop
         async with aiohttp.ClientSession() as session:
             tasks = []
             for idx, seg in enumerate(segments):
@@ -391,17 +387,37 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
                 print(f"\n⚠️ Some segments failed to download. Pipeline will retry shortly...", flush=True)
                 return False
 
-        # 🏁 Assembly Phase: Only fires when 100% of chunks are successfully accounted for
-        print(f"\nMerging chunks into final pipeline target: {target_output}...")
-        with open(target_output, "wb") as outfile:
-            for idx in range(len(segments)):
-                chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
-                if os.path.exists(chunk_path):
-                    with open(chunk_path, "rb") as infile:
-                        outfile.write(infile.read())
-                    os.remove(chunk_path) # Clean up file chunk instantly
+        # 🏁 Fixed Assembly Phase: Generate a text file list and let FFmpeg remux cleanly
+        print(f"\nMerging chunks into final pipeline target via FFmpeg remux: {target_output}...")
         
-        # Wipe the isolated temp directory clear
+        concat_list_path = os.path.join(temp_dir, "chunks.txt")
+        with open(concat_list_path, "w") as f:
+            for idx in range(len(segments)):
+                # FFmpeg requires forward slashes or escaped paths in the concat file list
+                f.write(f"file '{idx:06d}.ts'\n")
+
+        # Run safe, lightning-fast stream copy remux to build a structurally healthy MP4
+        import subprocess
+        cmd = [
+            'ffmpeg', '-y', '-f', 'concat', '-safe', '0', 
+            '-i', concat_list_path, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', target_output
+        ]
+        
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = process.communicate()
+
+        if process.returncode != 0:
+            print(f"❌ FFmpeg Remux Failed: {stderr.decode('utf-8', errors='ignore')}", flush=True)
+            return False
+
+        # Clean up chunk files now that the container is built correctly
+        for idx in range(len(segments)):
+            chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+            if os.path.exists(chunk_path):
+                os.remove(chunk_path)
+        if os.path.exists(concat_list_path):
+            os.remove(concat_list_path)
+        
         try:
             os.rmdir(temp_dir)
         except Exception:
