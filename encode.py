@@ -281,7 +281,45 @@ async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, heade
                     return False
                 await asyncio.sleep(1)
 
-async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_num):
+async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, progress_tracker, key_info=None):
+    async with semaphore:
+        target_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+        
+        # 🎯 FIX: If file exists, skip network download but DO NOT increment the counter here
+        # (It was already counted by our folder scanner at the start to prevent overcounting!)
+        if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+            return True
+
+        for attempt in range(3):
+            try:
+                async with session.get(seg_url, headers=headers, timeout=20) as response:
+                    if response.status != 200:
+                        raise Exception(f"HTTP Status {response.status}")
+                    
+                    data = await response.read()
+                    
+                    # Handle AES Decryption if present
+                    if key_info and key_info.get("key"):
+                        if AES is None:
+                            raise ImportError("Crypto library missing. Cannot decrypt AES HLS stream.")
+                        iv = key_info["iv"] if key_info.get("iv") else idx.to_bytes(16, byteorder='big')
+                        cipher = AES.new(key_info["key"], AES.MODE_CBC, iv)
+                        data = cipher.decrypt(data)
+
+                    with open(target_path, "wb") as f:
+                        f.write(data)
+                    
+                    # 🎯 FIX: Only increment the counter for freshly pulled segments
+                    progress_tracker["completed"] += 1
+                    pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
+                    print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
+                    return True
+            except Exception:
+                if attempt == 2:
+                    return False
+                await asyncio.sleep(1)
+
+async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_num, MAX_HLS_WORKERS=5):
     try:
         playlist = m3u8.load(m3u8_url)
         if playlist.is_variant:
@@ -296,6 +334,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         if not segments:
             return False
 
+        # 🎯 Locked folder name keeps downstream logic intact but isolates batch files
         temp_dir = f"hls_temp_file_{file_num}"
         os.makedirs(temp_dir, exist_ok=True)
         semaphore = asyncio.Semaphore(MAX_HLS_WORKERS)
@@ -307,6 +346,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         if session_cookies:
             custom_headers["Cookie"] = session_cookies
 
+        # 🎯 FIX: Scan what is already on disk *before* launching the download loop
         existing_completed = 0
         for idx in range(len(segments)):
             check_path = os.path.join(temp_dir, f"{idx:06d}.ts")
@@ -314,67 +354,65 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
                 existing_completed += 1
 
         progress_tracker = {
-            "completed": existing_completed,
+            "completed": existing_completed,  # Start tracking exactly from what we already have
             "total": len(segments)
         }
 
         if existing_completed > 0:
-            print(f"📋 Found {progress_tracker['total']} segments. Resuming with {existing_completed} chunks already cached locally!", flush=True)
+            print(f"\n📋 Found {progress_tracker['total']} segments. Resuming pipeline with {existing_completed} chunks already cached locally!", flush=True)
+        else:
+            print(f"\n📋 Found {progress_tracker['total']} segments to download.", flush=True)
 
+        # Handle Encryption Key URI Resolution if applicable
+        key_info = None
+        if playlist.keys and playlist.keys[0]:
+            key_uri = urljoin(base_url, playlist.keys[0].uri)
+            async with aiohttp.ClientSession() as session:
+                async with session.get(key_uri, headers=custom_headers) as res:
+                    if res.status == 200:
+                        key_bytes = await res.read()
+                        iv_bytes = playlist.keys[0].iv.encode() if playlist.keys[0].iv else None
+                        key_info = {"key": key_bytes, "iv": iv_bytes}
+
+        # Run the concurrent download loop
         async with aiohttp.ClientSession() as session:
-            key_cache = {}
             tasks = []
-            for idx, segment in enumerate(segments):
-                seg_url = urljoin(base_url, segment.uri)
-                key_info = None
-                
-                if segment.key and segment.key.method == "AES-128":
-                    key_url = urljoin(base_url, segment.key.uri)
-                    if key_url not in key_cache:
-                        key_data = await fetch_hls_key(session, key_url, custom_headers)
-                        iv_data = bytes.fromhex(segment.key.iv.strip('0x')) if segment.key.iv else None
-                        key_cache[key_url] = {"key": key_data, "iv": iv_data}
-                    key_info = key_cache[key_url]
-
-                tasks.append(download_hls_segment(session, idx, seg_url, semaphore, temp_dir, custom_headers, progress_tracker, key_info))
+            for idx, seg in enumerate(segments):
+                seg_url = urljoin(base_url, seg.uri)
+                tasks.append(
+                    download_hls_segment(
+                        session, idx, seg_url, semaphore, temp_dir, 
+                        custom_headers, progress_tracker, key_info
+                    )
+                )
             
             results = await asyncio.gather(*tasks)
-
-        if all(results):
-            print(f"\n💾 Segment downloads complete. Assembling raw stream chunks...")
-            raw_ts_path = target_output + ".ts"
-            
-            # Combine the chunks into a unified MPEG-TS container file first
-            with open(raw_ts_path, "wb") as out_f:
-                for idx in range(len(segments)):
-                    chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
-                    with open(chunk_path, "rb") as chunk_f:
-                        out_f.write(chunk_f.read())
-                    os.remove(chunk_path)
-            os.rmdir(temp_dir)
-            
-            print(f"🎬 Remuxing combined stream layout into a valid MP4 container...", flush=True)
-            remux_cmd = [
-                'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-                '-i', raw_ts_path,
-                '-c', 'copy', '-movflags', '+faststart', target_output
-            ]
-            
-            remux_result = subprocess.run(remux_cmd)
-            
-            # Clean up the raw temporary transport stream file
-            if os.path.exists(raw_ts_path):
-                os.remove(raw_ts_path)
-                
-            if remux_result.returncode == 0:
-                print("✅ Stream containers converted successfully!")
-                return True
-            else:
-                print("❌ FFmpeg container remuxing failed.")
+            if not all(results):
+                print(f"\n⚠️ Some segments failed to download. Pipeline will retry shortly...", flush=True)
                 return False
+
+        # 🏁 Assembly Phase: Only fires when 100% of chunks are successfully accounted for
+        print(f"\nMerging chunks into final pipeline target: {target_output}...")
+        with open(target_output, "wb") as outfile:
+            for idx in range(len(segments)):
+                chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
+                if os.path.exists(chunk_path):
+                    with open(chunk_path, "rb") as infile:
+                        outfile.write(infile.read())
+                    os.remove(chunk_path) # Clean up file chunk instantly
+        
+        # Wipe the isolated temp directory clear
+        try:
+            os.rmdir(temp_dir)
+        except Exception:
+            pass
+
+        print(f"✅ Success! Generated stable pipeline video asset.", flush=True)
+        return True
+
     except Exception as e:
-        print(f"\n❌ Custom Native Downloader Thread Panic: {e}")
-    return False
+        print(f"\n❌ Error encountered in HLS Downloader engine: {e}", flush=True)
+        return False
 
 # Place this right below the native_hls_downloader function block:
 
