@@ -745,8 +745,20 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                 a_cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             a_cmd += [a_tmp]
             
-            audio_success = run_ffmpeg_process(a_cmd, dur, display_name, target_size_mb, f"Seg {i} - Audio Encode Pass", batch_str)
-            
+            try:
+                audio_success = False
+                print(f"⏳ Running audio encoder...", flush=True)
+                
+                # Direct subprocess run execution utilizing the timeout parameter
+                audio_proc = subprocess.run(a_cmd, capture_output=True, text=True, timeout=90)
+                if audio_proc.returncode == 0:
+                    audio_success = True
+            except subprocess.TimeoutExpired:
+                print(f"⚠️ AUDIO ENCODE HANG: Encoder stuck on bad frame sequence. Hard timeout triggered.", flush=True)
+                audio_success = False
+            except Exception as ae:
+                print(f"⚠️ Audio pass exception encountered: {ae}", flush=True)
+                audio_success = False
             if not audio_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 500:
                 print(f"⚠️ AUDIO ENCODE FAILED (Stream Corrupted). Initiating fallback: Copying original audio track raw...", flush=True)
                 if os.path.exists(a_tmp): os.remove(a_tmp)
