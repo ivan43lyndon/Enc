@@ -712,18 +712,68 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         seg_out = f"seg_{file_num}_{i}.mp4"
         is_last = (i == len(segments) - 1)
         if mode == 'T':
-            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0:v', '-map', '0:a', '-movflags', '+faststart']
+            # Mode T: Direct stream copy (handles audio and video streams together)
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0:v', '-map', '0:a?', '-movflags', '+faststart', seg_out]
+            success = run_ffmpeg_process(cmd, dur, display_name, target_size_mb, f"Segment {i} (Mode T)", batch_str)
+            if not success:
+                print(f"❌ ERROR: Direct stream copy segment extraction failed for {display_name}.", flush=True)
+                if os.path.exists(temp_in): os.remove(temp_in)
+                return f"❌ FAILED: Trim step crashed", False
         else:
-            vf = vf_base
-            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium']
+            # 🎯 Mode E: RESILIENT ISOLATED MULTI-PASS PROCESSING
+            v_tmp = f"tmp_v_{file_num}_{i}.mp4"
+            a_tmp = f"tmp_a_{file_num}_{i}.m4a"
             
+            # PASS 1: Video-Only Processing (Strict priority)
+            print(f"🎬 Processing Video Stream for Segment {i}...", flush=True)
+            v_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf_base, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium', '-an']
             if do_fade and is_last:
-                cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}", '-vf', vf + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+                v_cmd += ['-vf', vf_base + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+            v_cmd += [v_tmp]
+            
+            video_success = run_ffmpeg_process(v_cmd, dur, display_name, target_size_mb, f"Seg {i} - Video Pass", batch_str)
+            if not video_success or not os.path.exists(v_tmp) or os.path.getsize(v_tmp) < 1000:
+                print(f"❌ CRITICAL ERROR: Video encoding failed. Whole process aborted.", flush=True)
+                if os.path.exists(v_tmp): os.remove(v_tmp)
+                if os.path.exists(temp_in): os.remove(temp_in)
+                return f"❌ FAILED: Video encode crashed", False
+
+            # PASS 2: Audio Recovery Processing (With automatic fallback strategy)
+            print(f"🎵 Processing Audio Stream for Segment {i}...", flush=True)
+            a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vn', '-c:a', 'aac', '-b:a', '96k']
+            if do_fade and is_last:
+                a_cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+            a_cmd += [a_tmp]
+            
+            audio_success = run_ffmpeg_process(a_cmd, dur, display_name, target_size_mb, f"Seg {i} - Audio Encode Pass", batch_str)
+            
+            if not audio_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 500:
+                print(f"⚠️ AUDIO ENCODE FAILED (Stream Corrupted). Initiating fallback: Copying original audio track raw...", flush=True)
+                if os.path.exists(a_tmp): os.remove(a_tmp)
+                
+                # FALLBACK STRATEGY: Directly pull the original un-reencoded stream track
+                fallback_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vn', '-c:a', 'copy', a_tmp]
+                fallback_success = run_ffmpeg_process(fallback_cmd, dur, display_name, target_size_mb, f"Seg {i} - Audio Fallback Pass", batch_str)
+                
+                if not fallback_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 100:
+                    print(f"⚠️ Warning: Source file has no extractable audio track. Producing silent video track assignment.", flush=True)
+                    if os.path.exists(a_tmp): os.remove(a_tmp)
+                    a_tmp = None
+
+            # PASS 3: Safe Mux Phase (Combine the tracks seamlessly)
+            print(f"🎛️ Muxing video and audio pipelines together for Segment {i}...", flush=True)
+            if a_tmp:
+                mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-i', a_tmp, '-c:v', 'copy', '-c:a', 'copy', '-movflags', '+faststart', seg_out]
             else:
-                cmd += ['-c:a', 'aac', '-b:a', '96k']
-        cmd += [seg_out]
-        
-        run_ffmpeg_process(cmd, dur, display_name, target_size_mb, f"Segment {i}", batch_str)
+                # Safe fall-through for completely absent audio streams
+                mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-c:v', 'copy', '-movflags', '+faststart', seg_out]
+                
+            subprocess.run(mux_cmd)
+            
+            # Delete intermediate single-stream artifacts instantly
+            if os.path.exists(v_tmp): os.remove(v_tmp)
+            if a_tmp and os.path.exists(a_tmp): os.remove(a_tmp)
+
         segment_files.append(seg_out)
 
     if len(segment_files) > 1:
@@ -749,6 +799,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         print(f"📦 HOLDING: {display_name} | Group CT{ct_code} (Part {current_part} of {total_parts})", flush=True)
         if os.path.exists(temp_in): os.remove(temp_in)
         return final_out, False
+        
     print(f"📤 Uploading: {display_name}...", flush=True)
     media = MediaFileUpload(final_out, mimetype='video/mp4', resumable=True)
     request = service.files().create(body={'name': output_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
@@ -763,11 +814,6 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             time.sleep(5)
 
     print(f"🚀 SINGLE FILE UPLOAD COMPLETE: {display_name}", flush=True)
-    try:
-        q_find = f"name = '{safe_q_name}' and '{OUTPUT_FOLDER_ID}' in parents and trashed = false"
-        uploaded_files = service.files().list(q=q_find, fields="files(id)").execute().get('files', [])
-    except Exception as e:
-        print(f"⚠️ Could not initiate transfer for single file: {e}", flush=True)
     if os.path.exists(temp_in): os.remove(temp_in)
     if os.path.exists(final_out): os.remove(final_out)
     return None, False
