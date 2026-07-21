@@ -475,6 +475,8 @@ async def native_progressive_downloader(url, session_cookies, target_output):
                 downloaded_bytes = resume_byte
                 chunk_size = 1024 * 1024  # 1MB buffer chunks
 
+                last_printed_pct = -1
+
                 # Use "ab" mode to append to the existing file
                 file_mode = "ab" if resume_byte > 0 else "wb"
                 with open(target_output, file_mode) as out_f:
