@@ -251,9 +251,6 @@ async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, heade
     async with semaphore:
         target_path = os.path.join(temp_dir, f"{idx:06d}.ts")
         if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
-            progress_tracker["completed"] += 1
-            pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
-            print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
             return True
 
         for attempt in range(3):
@@ -274,7 +271,10 @@ async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, heade
                     
                     progress_tracker["completed"] += 1
                     pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
-                    print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
+                    
+                    if pct % 10 == 0 and pct != progress_tracker.get("last_printed_pct", -1):
+                        progress_tracker["last_printed_pct"] = pct
+                        print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", flush=True)
                     return True
             except Exception:
                 if attempt == 2:
@@ -353,7 +353,8 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
 
         progress_tracker = {
             "completed": existing_completed,
-            "total": len(segments)
+            "total": len(segments),
+            "last_printed_pct": -1
         }
 
         if existing_completed > 0:
@@ -485,9 +486,9 @@ async def native_progressive_downloader(url, session_cookies, target_output):
 
                         if total_size > 0:
                             pct = int((downloaded_bytes / total_size) * 100)
-                            print(f"📥 Download Progress: {pct}% ({downloaded_bytes // (1024*1024)}MB / {total_size // (1024*1024)}MB)", end='\r', flush=True)
-                        else:
-                            print(f"📥 Downloaded: {downloaded_bytes // (1024*1024)} MB", end='\r', flush=True)
+                            if pct % 10 == 0 and pct != last_printed_pct:
+                                last_printed_pct = pct
+                                print(f"📥 Download Progress: {pct}% ({downloaded_bytes // (1024*1024)}MB / {total_size // (1024*1024)}MB)", flush=True)
 
                 print(f"\n💾 Download complete. File saved cleanly.")
                 return True
