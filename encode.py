@@ -220,17 +220,21 @@ def run_ffmpeg_process(cmd, duration, display_name, target_size, desc, batch_str
     print(f"\n--- {desc}: {display_name} ---", flush=True)
     process = Popen(cmd, stdout=PIPE, stderr=STDOUT, universal_newlines=True, bufsize=1)
     time_regex = re.compile(r"time=(\d{2}:\d{2}:\d{2}\.\d+)")
-    last_print_time = 0
+    last_printed_milestone = -1
     
     for line in process.stdout:
         match = time_regex.search(line)
         if match:
-            current_wall_time = time.time()
-            if current_wall_time - last_print_time > 1:
-                cur_s = time_to_seconds(match.group(1))
-                pct = (cur_s / duration) * 100 if duration > 0 else 0
-                print(f"📦 {batch_str} | {display_name} | {pct:5.1f}% | {match.group(1)} / {seconds_to_hms(duration)}", flush=True)
-                last_print_time = current_wall_time
+            cur_s = time_to_seconds(match.group(1))
+            pct = (cur_s / duration) * 100 if duration > 0 else 0
+            
+            # Calculate the current 10% milestone bracket
+            milestone = (int(pct) // 10) * 10
+            
+            # Only print when crossing into a new 10% milestone
+            if milestone > 0 and milestone != last_printed_milestone:
+                last_printed_milestone = milestone
+                print(f"📦 {batch_str} | {display_name} | {milestone:3d}% | {match.group(1)} / {seconds_to_hms(duration)}", flush=True)
                 
     process.wait()
     if process.returncode != 0:
@@ -247,13 +251,13 @@ async def fetch_hls_key(session, key_url, headers):
         print(f"❌ Failed to fetch decryption key from {key_url}: {e}")
     return None
 
-async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, progress_tracker, key_info=None):
+async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, progress_tracker, lock, key_info=None):
     async with semaphore:
         target_path = os.path.join(temp_dir, f"{idx:06d}.ts")
         if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
             return True
 
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 async with session.get(seg_url, headers=headers, timeout=20) as response:
                     if response.status != 200:
@@ -269,53 +273,20 @@ async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, heade
                     with open(target_path, "wb") as f:
                         f.write(data)
                     
-                    progress_tracker["completed"] += 1
-                    pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
-                    
-                    if pct % 10 == 0 and pct != progress_tracker.get("last_printed_pct", -1):
-                        progress_tracker["last_printed_pct"] = pct
-                        print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", flush=True)
+                    # Lock thread access to state updates to eliminate log spam
+                    async with lock:
+                        progress_tracker["completed"] += 1
+                        pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
+                        
+                        milestone = (pct // 10) * 10
+                        if milestone > 0 and milestone != progress_tracker.get("last_printed_milestone", -1):
+                            progress_tracker["last_printed_milestone"] = milestone
+                            print(f"📥 HLS Download Progress: {milestone}% ({progress_tracker['completed']}/{progress_tracker['total']})", flush=True)
+                            
                     return True
             except Exception:
-                if attempt == 2:
-                    return False
-                await asyncio.sleep(1)
-
-async def download_hls_segment(session, idx, seg_url, semaphore, temp_dir, headers, progress_tracker, key_info=None):
-    async with semaphore:
-        target_path = os.path.join(temp_dir, f"{idx:06d}.ts")
-        
-        # 🎯 FIX: If file exists, skip network download but DO NOT increment the counter here
-        # (It was already counted by our folder scanner at the start to prevent overcounting!)
-        if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
-            return True
-
-        for attempt in range(3):
-            try:
-                async with session.get(seg_url, headers=headers, timeout=20) as response:
-                    if response.status != 200:
-                        raise Exception(f"HTTP Status {response.status}")
-                    
-                    data = await response.read()
-                    
-                    # Handle AES Decryption if present
-                    if key_info and key_info.get("key"):
-                        if AES is None:
-                            raise ImportError("Crypto library missing. Cannot decrypt AES HLS stream.")
-                        iv = key_info["iv"] if key_info.get("iv") else idx.to_bytes(16, byteorder='big')
-                        cipher = AES.new(key_info["key"], AES.MODE_CBC, iv)
-                        data = cipher.decrypt(data)
-
-                    with open(target_path, "wb") as f:
-                        f.write(data)
-                    
-                    # 🎯 FIX: Only increment the counter for freshly pulled segments
-                    progress_tracker["completed"] += 1
-                    pct = int((progress_tracker["completed"] / progress_tracker["total"]) * 100)
-                    print(f"📥 HLS Download Progress: {pct}% ({progress_tracker['completed']}/{progress_tracker['total']})", end='\r', flush=True)
-                    return True
-            except Exception:
-                if attempt == 2:
+                # Corrected: Fail on the final 5th attempt (index 4)
+                if attempt == 4:
                     return False
                 await asyncio.sleep(1)
 
