@@ -139,21 +139,28 @@ def seconds_to_hms(seconds):
     return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
 
 def upload_final_to_drive(service, local_path, drive_name):
-    print(f"📤 Final Upload ", flush=True)
+    print(f"📤 Final Upload: {drive_name}", flush=True)
     max_retries = 5
+    
     for attempt in range(1, max_retries + 1):
         try:
-            media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True)
+            # Set a chunk size (10MB) to prevent buffer overflows on large files
+            media = MediaFileUpload(local_path, mimetype='video/mp4', resumable=True, chunksize=10*1024*1024)
             request = service.files().create(
                 body={'name': drive_name, 'parents': [OUTPUT_FOLDER_ID]}, 
                 media_body=media
             )
             
             response = None
+            last_printed_pct = -1
+            
             while response is None:
                 status, response = request.next_chunk()
                 if status:
-                    print(f"⬆️ Upload Progress: {int(status.progress() * 100)}%", flush=True)
+                    pct = int(status.progress() * 100)
+                    if pct % 10 == 0 and pct != last_printed_pct:
+                        last_printed_pct = pct
+                        print(f"⬆️ Upload Progress: {pct}%", flush=True)
             
             print(f"🚀 UPLOAD SUCCESSFUL on attempt {attempt}!", flush=True)
             return True 
@@ -163,8 +170,8 @@ def upload_final_to_drive(service, local_path, drive_name):
             if attempt == max_retries:
                 raise e 
             
-            wait_time = attempt * 10
-            print(f"⏳ Waiting {wait_time} seconds before retrying...", flush=True)
+            wait_time = attempt * 5
+            print(f"⏳ Resetting dead SSL connection. Retrying in {wait_time} seconds...", flush=True)
             time.sleep(wait_time)
 
 async def resolve_any_link(input_url):
@@ -343,6 +350,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
                         iv_bytes = playlist.keys[0].iv.encode() if playlist.keys[0].iv else None
                         key_info = {"key": key_bytes, "iv": iv_bytes}
 
+        progress_lock = asyncio.Lock()
         async with aiohttp.ClientSession() as session:
             tasks = []
             for idx, seg in enumerate(segments):
@@ -350,7 +358,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
                 tasks.append(
                     download_hls_segment(
                         session, idx, seg_url, semaphore, temp_dir, 
-                        custom_headers, progress_tracker, key_info
+                        custom_headers, progress_tracker, progress_lock, key_info # 👈 Added progress_lock
                     )
                 )
             
@@ -790,11 +798,16 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     media = MediaFileUpload(final_out, mimetype='video/mp4', resumable=True)
     request = service.files().create(body={'name': output_name, 'parents': [OUTPUT_FOLDER_ID]}, media_body=media)
     response = None
+    last_printed_pct = -1
+
     while response is None:
         try:
             status, response = request.next_chunk()
             if status:
-                print(f"⬆️ {display_name} | Uploading: {int(status.progress() * 100)}%", end='\r', flush=True)
+                pct = int(status.progress() * 100)
+                if pct % 10 == 0 and pct != last_printed_pct:
+                    last_printed_pct = pct
+                    print(f"⬆️ {display_name} | Uploading: {pct}%", flush=True)
         except Exception as e:
             print(f"⚠️ Upload flicker: {e}. Retrying...", flush=True)
             time.sleep(5)
