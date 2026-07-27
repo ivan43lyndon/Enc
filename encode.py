@@ -176,7 +176,7 @@ def upload_final_to_drive(service, local_path, drive_name):
 
 async def resolve_any_link(input_url):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled"])
+        browser = await p.chromium.launch(headless=True, args=["--no-sandbox", "--disable-blink-features=AutomationControlled","--log-level=3","--silent"])
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         page = await context.new_page()
         
@@ -467,9 +467,10 @@ async def native_progressive_downloader(url, session_cookies, target_output):
 
                         if total_size > 0:
                             pct = int((downloaded_bytes / total_size) * 100)
-                            if pct % 10 == 0 and pct != last_printed_pct:
-                                last_printed_pct = pct
-                                print(f"📥 Download Progress: {pct}% ({downloaded_bytes // (1024*1024)}MB / {total_size // (1024*1024)}MB)", flush=True)
+                            milestone = (pct // 10) * 10
+                            if milestone > 0 and milestone != last_printed_pct:
+                                last_printed_pct = milestone
+                                print(f"📥 Progressive Download Progress: {milestone}% ({downloaded_bytes // (1024*1024)}MB / {total_size // (1024*1024)}MB)", flush=True)
 
                 print(f"\n💾 Download complete. File saved cleanly.")
                 return True
