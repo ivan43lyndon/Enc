@@ -593,11 +593,22 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
         # --- PHASE 2: RESUMABLE DOWNLOAD PIPELINE ---
         # This loop retries the download inside the *same* scraping session, preserving local files
-        max_dl_attempts = 10
+        max_failed_attempts = 10  # Only count attempts where ZERO bytes were downloaded
+        failed_attempts = 0
+        last_file_size = 0
         download_success = False
-        
-        for dl_attempt in range(1, max_dl_attempts + 1):
-            print(f"📥 [Download Connection Attempt {dl_attempt}/{max_dl_attempts}] streaming data...", flush=True)
+
+        while failed_attempts < max_failed_attempts:
+            current_file_size = os.path.getsize(temp_in) if os.path.exists(temp_in) else 0
+            
+            # Reset failure count if we made progress since the last attempt!
+            if current_file_size > last_file_size:
+                failed_attempts = 0
+                last_file_size = current_file_size
+
+            attempt_num = failed_attempts + 1
+            print(f"📥 [Download Stream Attempt {attempt_num}/{max_failed_attempts}] Current size: {current_file_size // (1024*1024)}MB", flush=True)
+
             try:
                 if ".m3u8" in resolved_link.lower() or "master" in resolved_link.lower():
                     native_success = asyncio.run(native_hls_downloader(resolved_link, session_cookies, temp_in, file_num))
@@ -611,7 +622,13 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                         break
             except Exception as dl_err:
                 print(f"⚠️ Stream connection dropped: {dl_err}", flush=True)
-            
+
+            # Check if bytes were added during this attempt
+            new_file_size = os.path.getsize(temp_in) if os.path.exists(temp_in) else 0
+            if new_file_size == current_file_size:
+                failed_attempts += 1
+                print(f"⚠️ No progress made on this attempt. Stalled attempt {failed_attempts}/{max_failed_attempts}.", flush=True)
+
             print("⏳ Reconnecting stream to resume pipeline in 5 seconds...", flush=True)
             time.sleep(5)
 
