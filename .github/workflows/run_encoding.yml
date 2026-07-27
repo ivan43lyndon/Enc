@@ -38,6 +38,7 @@ jobs:
       - name: Run Encoder
         id: encoder_step
         env:
+          PYTHONUNBUFFERED: "1"
           DRIVE_TOKEN: ${{ secrets.DRIVE_TOKEN }}
           TARGET_EMAIL: ${{ secrets.TARGET_EMAIL }}
         # We handle error status manually, so we don't strictly need continue-on-error here
