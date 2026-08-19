@@ -20,7 +20,7 @@ jobs:
 
     - name: Install System Dependencies (FFmpeg & FFprobe)
       run: |
-        sudo apt-get update
+        # sudo apt-get update
         sudo apt-get install -y ffmpeg
 
     - name: Install Python Dependencies
