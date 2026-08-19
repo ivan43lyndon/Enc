@@ -18,13 +18,9 @@ jobs:
         python-version: '3.12'
         # Removed the cache line to fix the error 🟢
 
-    - name: Install System Dependencies (FFmpeg & FFprobe)
+    - name: Install Dependencies
       run: |
-        # sudo apt-get update
         sudo apt-get install -y ffmpeg
-
-    - name: Install Python Dependencies
-      run: |
         python -m pip install --upgrade pip
         pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib Pillow
 
