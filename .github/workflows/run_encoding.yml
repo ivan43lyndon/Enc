@@ -20,10 +20,10 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
-
+          # sudo apt-get update
       - name: Install System Dependencies
         run: |
-          # sudo apt-get update
+
           sudo apt-get install -y ffmpeg
           pip install playwright beautifulsoup4 cloudscraper
           pip install playwright yt-dlp
