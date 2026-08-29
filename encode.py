@@ -676,6 +676,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     print(f"💾 DOWNLOAD COMPLETE: {display_name}", flush=True) 
 
     try:
+        # First-pass attempt to read stream info natively
         probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
         src_h = int(probe_out[0]) if probe_out[0] else 720
         fps_parts = probe_out[1].split('/')
@@ -683,9 +684,44 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         total_dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip())
         src_size = os.path.getsize(temp_in) / (1024*1024)
     except Exception as e:
-        print(f"❌ DATA ERROR: The link resolved to non-video data. Skipping.")
-        if os.path.exists(temp_in): os.remove(temp_in)
-        return None, False
+        print(f"⚠️ DATA ERROR: The link resolved to non-video data or broken headers. Attempting recovery fix...", flush=True)
+        
+        recovered_temp = f"recovered_{file_num}.mp4"
+        # Run a repair command that explicitly enforces a standard constant frame rate and pixel format
+        repair_cmd = [
+            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', 
+            '-i', temp_in, 
+            '-vf', 'fps=30,format=yuv420p', 
+            '-c:v', 'libx264', '-crf', '23', '-preset', 'faster', 
+            '-c:a', 'aac', '-b:a', '128k', 
+            recovered_temp
+        ]
+        
+        repair_proc = subprocess.run(repair_cmd, capture_output=True, text=True)
+        
+        if repair_proc.returncode == 0 and os.path.exists(recovered_temp) and os.path.getsize(recovered_temp) > 10000:
+            print(f"✅ Recovery generation successful! Re-probing repaired asset streams...", flush=True)
+            # Swap out the broken stream source with the newly repaired file
+            os.remove(temp_in)
+            os.rename(recovered_temp, temp_in)
+            
+            # Re-probe the structural parameters from the fixed file so the rest of the script works flawlessly
+            try:
+                probe_out = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=height,avg_frame_rate', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip().split(',')
+                src_h = int(probe_out[0]) if probe_out[0] else 720
+                fps_parts = probe_out[1].split('/')
+                src_fps = float(fps_parts[0])/float(fps_parts[1]) if len(fps_parts)==2 else 30.0
+                total_dur = float(subprocess.run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', temp_in], capture_output=True, text=True).stdout.strip())
+                src_size = os.path.getsize(temp_in) / (1024*1024)
+            except Exception as nested_err:
+                print(f"❌ Recovery failed: Re-probing repaired container structure returned error: {nested_err}")
+                if os.path.exists(temp_in): os.remove(temp_in)
+                return None, False
+        else:
+            print(f"❌ Recovery aborted: FFmpeg repair engine failed or produced zero bytes.", flush=True)
+            if os.path.exists(recovered_temp): os.remove(recovered_temp)
+            if os.path.exists(temp_in): os.remove(temp_in)
+            return None, False
 
     time_points = data['times']
     mode, do_fade = data['mode'], data['fade']
