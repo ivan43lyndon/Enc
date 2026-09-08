@@ -741,7 +741,6 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
     bitrate = int((target_size_mb * 8192 - (96 * total_trimmed_dur)) / total_trimmed_dur) if total_trimmed_dur > 0 else 1000
 
     vf_base = f"scale=w='min(iw,{TARGET_WIDTH})':h='min(ih,{TARGET_HEIGHT})':force_original_aspect_ratio=decrease,setsar=1,scale=trunc(iw/2)*2:trunc(ih/2)*2"
-    if src_fps > 30.5: vf_base += ",fps=fps=30"
 
     segment_files = []
     for i, (start, dur) in enumerate(segments):
