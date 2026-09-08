@@ -748,7 +748,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
         is_last = (i == len(segments) - 1)
         if mode == 'T':
             # Mode T: Direct stream copy (handles audio and video streams together)
-            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0:v', '-map', '0:a?', '-movflags', '+faststart', seg_out]
+            cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-c', 'copy', '-map', '0:v', '-map', '0:a?', '-avoid_negative_ts', 'make_zero', '-movflags', '+faststart', seg_out]
             success = run_ffmpeg_process(cmd, dur, display_name, target_size_mb, f"Segment {i} (Mode T)", batch_str)
             if not success:
                 print(f"❌ ERROR: Direct stream copy segment extraction failed for {display_name}.", flush=True)
@@ -761,7 +761,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             
             # PASS 1: Video-Only Processing (Strict priority)
             print(f"🎬 Processing Video Stream for Segment {i}...", flush=True)
-            v_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf_base, '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium', '-an']
+            v_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf_base, '-avoid_negative_ts', 'make_zero', '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium', '-an']
             if do_fade and is_last:
                 v_cmd += ['-vf', vf_base + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             v_cmd += [v_tmp]
@@ -775,7 +775,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
             # PASS 2: Audio Recovery Processing (With automatic fallback strategy)
             print(f"🎵 Processing Audio Stream for Segment {i}...", flush=True)
-            a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vn', '-c:a', 'aac', '-b:a', '96k']
+            a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-avoid_negative_ts', 'make_zero', '-vn', '-c:a', 'aac', '-b:a', '96k']
             if do_fade and is_last:
                 a_cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             a_cmd += [a_tmp]
