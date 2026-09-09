@@ -486,6 +486,38 @@ async def native_progressive_downloader(url, session_cookies, target_output):
         print(f"\n❌ Progressive Downloader Error: {e}")
     return False
 
+def is_audio_corrupted(file_path):
+    """
+    Probes the input file to verify if the audio stream can be decoded without errors.
+    Returns True if audio is missing, unreadable, or corrupted.
+    """
+    cmd = [
+        'ffprobe', '-v', 'error', 
+        '-select_streams', 'a:0', 
+        '-show_entries', 'stream=codec_name', 
+        '-of', 'default=noprint_wrappers=1:nokey=1', 
+        file_path
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        # If no output or returncode != 0, there's no valid audio stream
+        if result.returncode != 0 or not result.stdout.strip():
+            return True
+            
+        # Optional: Test-decode 5 seconds of audio to check for stream corruption
+        decode_check = [
+            'ffmpeg', '-v', 'error', '-ss', '0', '-t', '5', 
+            '-i', file_path, '-vn', '-f', 'null', '-'
+        ]
+        check_result = subprocess.run(decode_check, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if check_result.returncode != 0 or "Error" in check_result.stderr:
+            return True
+            
+        return False  # Audio is clean!
+    except Exception as e:
+        print(f"⚠️ Audio probe failed ({e}). Defaulting to Audio Recovery Mode.", flush=True)
+        return True
+
 def process_video(service, file_id, fname, data, batch_str, file_num, hold_upload=False, skip_api_check=False, ct_code=None, current_part=0, total_parts=0):
 
     raw_input = file_id.strip()
@@ -763,80 +795,116 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                 return f"❌ FAILED: Trim step crashed", False
         else:
             # 🎯 Mode E: RESILIENT ISOLATED MULTI-PASS PROCESSING
-            v_tmp = f"tmp_v_{file_num}_{i}.mp4"
-            a_tmp = f"tmp_a_{file_num}_{i}.m4a"
+            audio_is_bad = is_audio_corrupted(temp_in)
             
-            # PASS 1: Video-Only Processing (Strict priority)
-            print(f"🎬 Processing Video Stream for Segment {i}...", flush=True)
-            v_cmd = [
-                'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y', 
-                '-fflags', '+genpts+igndts',                     # 👈 Overrides inflated container PTS
-                '-ss', str(start), '-i', temp_in, '-t', str(dur), 
-                '-vf', f"setpts=N/(({src_fps})*TB),fps={src_fps},{vf_base}", # 👈 Forces 1:1 frame count timing
-                '-video_track_timescale', '90000',               # 👈 Forces standard 90kHz MP4 timebase scale
-                '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), 
-                '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", 
-                '-preset', 'medium', '-an',
-                v_tmp
-            ]
-            if do_fade and is_last:
-                v_cmd += ['-vf', vf_base + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
-            v_cmd += [v_tmp]
-            
-            video_success = run_ffmpeg_process(v_cmd, dur, display_name, target_size_mb, f"Seg {i} - Video Pass", batch_str)
-            if not video_success or not os.path.exists(v_tmp) or os.path.getsize(v_tmp) < 1000:
-                print(f"❌ CRITICAL ERROR: Video encoding failed. Whole process aborted.", flush=True)
-                if os.path.exists(v_tmp): os.remove(v_tmp)
-                if os.path.exists(temp_in): os.remove(temp_in)
-                return f"❌ FAILED: Video encode crashed", False
+            if not audio_is_bad:
+                # =============================================================
+                # PATH A: SINGLE-PASS ENCODE (Clean Audio Stream)
+                # Prevents 09:30-to-09:38 A/V drift on clean streams
+                # =============================================================
+                print(f"✅ Audio stream healthy. Running fast single-pass encode for Segment {i}...", flush=True)
+                
+                vf_filter = f"setpts=N/(({src_fps})*TB),fps={src_fps},{vf_base}"
+                af_filter = None
 
-            # PASS 2: Audio Recovery Processing (With automatic fallback strategy)
-            print(f"🎵 Processing Audio Stream for Segment {i}...", flush=True)
-            a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur),'-af', 'aresample=async=1', '-vn', '-c:a', 'aac', '-b:a', '96k']
-            if do_fade and is_last:
-                a_cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
-            a_cmd += [a_tmp]
-            
-            try:
-                audio_success = False
-                print(f"⏳ Running audio encoder...", flush=True)
+                if do_fade and is_last:
+                    vf_filter += f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
+                    af_filter = f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
+
+                single_cmd = [
+                    'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y',
+                    '-fflags', '+genpts+igndts',
+                    '-ss', str(start), '-i', temp_in, '-t', str(dur),
+                    '-vf', vf_filter,
+                    '-video_track_timescale', '90000',
+                    '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE),
+                    '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k",
+                    '-preset', 'medium'
+                ]
                 
-                # Direct subprocess run execution utilizing the timeout parameter
-                audio_proc = subprocess.run(a_cmd, capture_output=True, text=True, timeout=90)
-                if audio_proc.returncode == 0:
-                    audio_success = True
-            except subprocess.TimeoutExpired:
-                print(f"⚠️ AUDIO ENCODE HANG: Encoder stuck on bad frame sequence. Hard timeout triggered.", flush=True)
-                audio_success = False
-            except Exception as ae:
-                print(f"⚠️ Audio pass exception encountered: {ae}", flush=True)
-                audio_success = False
-            if not audio_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 500:
-                print(f"⚠️ AUDIO ENCODE FAILED (Stream Corrupted). Initiating fallback: Copying original audio track raw...", flush=True)
-                if os.path.exists(a_tmp): os.remove(a_tmp)
-                
-                # FALLBACK STRATEGY: Directly pull the original un-reencoded stream track
-                fallback_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vn', '-c:a', 'copy', a_tmp]
-                fallback_success = run_ffmpeg_process(fallback_cmd, dur, display_name, target_size_mb, f"Seg {i} - Audio Fallback Pass", batch_str)
-                
-                if not fallback_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 100:
-                    print(f"⚠️ Warning: Source file has no extractable audio track. Producing silent video track assignment.", flush=True)
+                if af_filter:
+                    single_cmd += ['-af', af_filter]
+
+                single_cmd += [
+                    '-c:a', 'aac', '-b:a', '96k',
+                    '-movflags', '+faststart', seg_out
+                ]
+
+                single_success = run_ffmpeg_process(single_cmd, dur, display_name, target_size_mb, f"Seg {i} - Single Pass", batch_str)
+
+                if not single_success or not os.path.exists(seg_out) or os.path.getsize(seg_out) < 1000:
+                    print(f"❌ Single pass failed. Falling back to decoupled recovery mode for Segment {i}...", flush=True)
+                    audio_is_bad = True  # Force execution to Path B below if single pass crashes
+
+            if audio_is_bad:
+                # =============================================================
+                # PATH B: DECOUPLED MULTI-PASS (Corrupted Audio Recovery)
+                # Isolates broken audio streams so video never crashes
+                # =============================================================
+                print(f"⚠️ Audio corruption detected! Running decoupled 3-pass for Segment {i}...", flush=True)
+                v_tmp = f"tmp_v_{file_num}_{i}.mp4"
+                a_tmp = f"tmp_a_{file_num}_{i}.m4a"
+
+                # PASS 1: Video-Only Processing
+                print(f"🎬 Processing Video Stream for Segment {i}...", flush=True)
+                v_cmd = [
+                    'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y',
+                    '-fflags', '+genpts+igndts',
+                    '-ss', str(start), '-i', temp_in, '-t', str(dur),
+                    '-vf', f"setpts=N/(({src_fps})*TB),fps={src_fps},{vf_base}",
+                    '-video_track_timescale', '90000',
+                    '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE),
+                    '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k",
+                    '-preset', 'medium', '-an'
+                ]
+                if do_fade and is_last:
+                    v_cmd += ['-vf', vf_base + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+                v_cmd += [v_tmp]
+
+                video_success = run_ffmpeg_process(v_cmd, dur, display_name, target_size_mb, f"Seg {i} - Video Pass", batch_str)
+                if not video_success or not os.path.exists(v_tmp) or os.path.getsize(v_tmp) < 1000:
+                    print(f"❌ CRITICAL ERROR: Video encoding failed. Whole process aborted.", flush=True)
+                    if os.path.exists(v_tmp): os.remove(v_tmp)
+                    if os.path.exists(temp_in): os.remove(temp_in)
+                    return f"❌ FAILED: Video encode crashed", False
+
+                # PASS 2: Audio Processing
+                print(f"🎵 Processing Audio Stream for Segment {i}...", flush=True)
+                a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-af', 'aresample=async=1', '-vn', '-c:a', 'aac', '-b:a', '96k']
+                if do_fade and is_last:
+                    a_cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
+                a_cmd += [a_tmp]
+
+                try:
+                    audio_success = False
+                    audio_proc = subprocess.run(a_cmd, capture_output=True, text=True, timeout=90)
+                    if audio_proc.returncode == 0:
+                        audio_success = True
+                except Exception:
+                    audio_success = False
+
+                if not audio_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 500:
+                    print(f"⚠️ AUDIO ENCODE FAILED. Initiating fallback: Copying raw stream...", flush=True)
                     if os.path.exists(a_tmp): os.remove(a_tmp)
-                    a_tmp = None
+                    fallback_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vn', '-c:a', 'copy', a_tmp]
+                    fallback_success = run_ffmpeg_process(fallback_cmd, dur, display_name, target_size_mb, f"Seg {i} - Audio Fallback", batch_str)
 
-            # PASS 3: Safe Mux Phase (Combine the tracks seamlessly)
-            print(f"🎛️ Muxing video and audio pipelines together for Segment {i}...", flush=True)
-            if a_tmp:
-                mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-i', a_tmp, '-c:v', 'copy', '-c:a', 'copy', '-shortest', '-movflags', '+faststart', seg_out]
-            else:
-                # Safe fall-through for completely absent audio streams
-                mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-c:v', 'copy', '-movflags', '+faststart', seg_out]
-                
-            subprocess.run(mux_cmd)
-            
-            # Delete intermediate single-stream artifacts instantly
-            if os.path.exists(v_tmp): os.remove(v_tmp)
-            if a_tmp and os.path.exists(a_tmp): os.remove(a_tmp)
+                    if not fallback_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 100:
+                        if os.path.exists(a_tmp): os.remove(a_tmp)
+                        a_tmp = None
+
+                # PASS 3: Safe Mux
+                print(f"🎛️ Muxing video and audio pipelines for Segment {i}...", flush=True)
+                if a_tmp:
+                    mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-i', a_tmp, '-c:v', 'copy', '-c:a', 'copy', '-shortest', '-movflags', '+faststart', seg_out]
+                else:
+                    mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-c:v', 'copy', '-movflags', '+faststart', seg_out]
+
+                subprocess.run(mux_cmd)
+
+                # Cleanup temp files
+                if os.path.exists(v_tmp): os.remove(v_tmp)
+                if a_tmp and os.path.exists(a_tmp): os.remove(a_tmp)
 
         segment_files.append(seg_out)
 
