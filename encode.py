@@ -379,8 +379,14 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         # Run safe, lightning-fast stream copy remux to build a structurally healthy MP4
         import subprocess
         cmd = [
-            'ffmpeg', '-y', '-f', 'concat', '-safe', '0', 
-            '-i', concat_list_path, '-c', 'copy', '-bsf:a', 'aac_adtstoasc', target_output
+            'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+            '-fflags', '+genpts+igndts',                 # Drops broken TS clock ticks and generates clean PTS
+            '-f', 'concat', '-safe', '0',
+            '-i', concat_list_path,
+            '-c', 'copy', '-bsf:a', 'aac_adtstoasc',     # Pure stream copy (fast, zero re-encoding)
+            '-avoid_negative_ts', 'make_zero',           # Shifts start timestamp strictly to 00:00:00
+            '-movflags', '+faststart',
+            target_output
         ]
         
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
