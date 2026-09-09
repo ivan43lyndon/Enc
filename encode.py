@@ -396,8 +396,6 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
             chunk_path = os.path.join(temp_dir, f"{idx:06d}.ts")
             if os.path.exists(chunk_path):
                 os.remove(chunk_path)
-        if os.path.exists(concat_list_path):
-            os.remove(concat_list_path)
         
         try:
             os.rmdir(temp_dir)
