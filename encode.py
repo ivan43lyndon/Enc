@@ -761,7 +761,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             
             # PASS 1: Video-Only Processing (Strict priority)
             print(f"🎬 Processing Video Stream for Segment {i}...", flush=True)
-            v_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf_base, '-avoid_negative_ts', 'make_zero', '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium', '-an']
+            v_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y', '-fflags', '+genpts', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf_base, '-fps_mode', 'cfr', '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium', '-an']
             if do_fade and is_last:
                 v_cmd += ['-vf', vf_base + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             v_cmd += [v_tmp]
@@ -775,7 +775,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
 
             # PASS 2: Audio Recovery Processing (With automatic fallback strategy)
             print(f"🎵 Processing Audio Stream for Segment {i}...", flush=True)
-            a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-avoid_negative_ts', 'make_zero', '-vn', '-c:a', 'aac', '-b:a', '96k']
+            a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur),'-af', 'aresample=async=1', '-vn', '-c:a', 'aac', '-b:a', '96k']
             if do_fade and is_last:
                 a_cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             a_cmd += [a_tmp]
@@ -810,7 +810,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             # PASS 3: Safe Mux Phase (Combine the tracks seamlessly)
             print(f"🎛️ Muxing video and audio pipelines together for Segment {i}...", flush=True)
             if a_tmp:
-                mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-i', a_tmp, '-c:v', 'copy', '-c:a', 'copy', '-movflags', '+faststart', seg_out]
+                mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-i', a_tmp, '-c:v', 'copy', '-c:a', 'copy', '-shortest', '-movflags', '+faststart', seg_out]
             else:
                 # Safe fall-through for completely absent audio streams
                 mux_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', v_tmp, '-c:v', 'copy', '-movflags', '+faststart', seg_out]
