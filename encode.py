@@ -370,7 +370,7 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         # 🏁 Fixed Assembly Phase: Generate a text file list and let FFmpeg remux cleanly
         print(f"\nMerging chunks into final pipeline target via FFmpeg remux: {target_output}...")
         
-        ts_files = [os.path.join(temp_dir, f"{idx:06d}.ts") for idx: in range(len(segments))]
+        ts_files = [os.path.join(temp_dir, f"{idx:06d}.ts") for idx in range(len(segments))]
         concat_str = "concat:" + "|".join(ts_files)
 
         # Merge raw TS stream directly into MP4 container to resolve packet header breaks
