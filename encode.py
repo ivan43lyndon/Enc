@@ -768,7 +768,16 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             
             # PASS 1: Video-Only Processing (Strict priority)
             print(f"🎬 Processing Video Stream for Segment {i}...", flush=True)
-            v_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'info', '-y', '-fflags', '+genpts', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vf', vf_base, '-fps_mode', 'cfr', '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", '-preset', 'medium', '-an']
+            v_cmd = [
+                'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y', 
+                '-ss', str(start), '-i', temp_in, '-t', str(dur), 
+                '-filter_complex', f"[0:v]fps={src_fps},setpts=N/(({src_fps})*TB)[v1];[v1]{vf_base}",  # 👈 Counts physical frames (N) at src_fps
+                '-r', str(src_fps),
+                '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE), 
+                '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k", 
+                '-preset', 'medium', '-an',
+                v_tmp
+            ]
             if do_fade and is_last:
                 v_cmd += ['-vf', vf_base + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
             v_cmd += [v_tmp]
