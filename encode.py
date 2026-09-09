@@ -799,33 +799,30 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             
             if not audio_is_bad:
                 # =============================================================
-                # PATH A: SINGLE-PASS ENCODE (Clean Audio Stream)
-                # Prevents 09:30-to-09:38 A/V drift on clean streams
+                # PATH A: SINGLE-PASS ENCODE (Output Seeking: -i before -ss)
+                # Prevents FPS drops and keeps exact targeted duration
                 # =============================================================
-                print(f"✅ Audio stream healthy. Running fast single-pass encode for Segment {i}...", flush=True)
+                print(f"✅ Audio stream healthy. Running single-pass encode for Segment {i}...", flush=True)
                 
-                vf_filter = f"setpts=N/(({src_fps})*TB),fps={src_fps},{vf_base}"
-                af_filter = None
+                # Dynamic filter to sanitize presentation timestamps and lock target video scaling
+                vf_filter = f"setpts=PTS-STARTPTS,{vf_base}"
+                af_filter = f"asetpts=PTS-STARTPTS"
 
                 if do_fade and is_last:
                     vf_filter += f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
-                    af_filter = f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
+                    af_filter += f",afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
 
                 single_cmd = [
                     'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y',
-                    '-fflags', '+genpts+igndts',
-                    '-ss', str(start), '-i', temp_in, '-t', str(dur),
+                    '-fflags', '+genpts+discardcorrupt',
+                    '-i', temp_in,                       # 1. Input FIRST (reads accurate container info)
+                    '-ss', str(start), '-t', str(dur),   # 2. -ss AFTER -i (guarantees exact length cut)
                     '-vf', vf_filter,
+                    '-af', af_filter,
                     '-video_track_timescale', '90000',
                     '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE),
                     '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k",
-                    '-preset', 'medium'
-                ]
-                
-                if af_filter:
-                    single_cmd += ['-af', af_filter]
-
-                single_cmd += [
+                    '-preset', 'medium',
                     '-c:a', 'aac', '-b:a', '96k',
                     '-movflags', '+faststart', seg_out
                 ]
@@ -839,27 +836,28 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
             if audio_is_bad:
                 # =============================================================
                 # PATH B: DECOUPLED MULTI-PASS (Corrupted Audio Recovery)
-                # Isolates broken audio streams so video never crashes
                 # =============================================================
                 print(f"⚠️ Audio corruption detected! Running decoupled 3-pass for Segment {i}...", flush=True)
                 v_tmp = f"tmp_v_{file_num}_{i}.mp4"
                 a_tmp = f"tmp_a_{file_num}_{i}.m4a"
 
-                # PASS 1: Video-Only Processing
+                # PASS 1: Video-Only Processing (-i before -ss)
                 print(f"🎬 Processing Video Stream for Segment {i}...", flush=True)
+                v_vf = f"setpts=PTS-STARTPTS,{vf_base}"
+                if do_fade and is_last:
+                    v_vf += f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
+
                 v_cmd = [
                     'ffmpeg', '-hide_banner', '-loglevel', 'info', '-y',
-                    '-fflags', '+genpts+igndts',
-                    '-ss', str(start), '-i', temp_in, '-t', str(dur),
-                    '-vf', f"setpts=N/(({src_fps})*TB),fps={src_fps},{vf_base}",
+                    '-fflags', '+genpts+discardcorrupt',
+                    '-i', temp_in,                       # Input FIRST
+                    '-ss', str(start), '-t', str(dur),   # -ss AFTER -i
+                    '-vf', v_vf,
                     '-video_track_timescale', '90000',
                     '-c:v', 'libx264', '-crf', str(TARGET_CRF_VALUE),
                     '-pix_fmt', 'yuv420p', '-maxrate', f"{bitrate}k", '-bufsize', f"{bitrate*2}k",
-                    '-preset', 'medium', '-an'
+                    '-preset', 'medium', '-an', v_tmp
                 ]
-                if do_fade and is_last:
-                    v_cmd += ['-vf', vf_base + f",fade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
-                v_cmd += [v_tmp]
 
                 video_success = run_ffmpeg_process(v_cmd, dur, display_name, target_size_mb, f"Seg {i} - Video Pass", batch_str)
                 if not video_success or not os.path.exists(v_tmp) or os.path.getsize(v_tmp) < 1000:
@@ -868,12 +866,19 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                     if os.path.exists(temp_in): os.remove(temp_in)
                     return f"❌ FAILED: Video encode crashed", False
 
-                # PASS 2: Audio Processing
+                # PASS 2: Audio Processing (-i before -ss)
                 print(f"🎵 Processing Audio Stream for Segment {i}...", flush=True)
-                a_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-af', 'aresample=async=1', '-vn', '-c:a', 'aac', '-b:a', '96k']
+                a_af = "aresample=async=1,asetpts=PTS-STARTPTS"
                 if do_fade and is_last:
-                    a_cmd += ['-af', f"afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"]
-                a_cmd += [a_tmp]
+                    a_af += f",afade=t=out:st={dur - FADE_DURATION}:d={FADE_DURATION}"
+
+                a_cmd = [
+                    'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
+                    '-i', temp_in,                       # Input FIRST
+                    '-ss', str(start), '-t', str(dur),   # -ss AFTER -i
+                    '-af', a_af,
+                    '-vn', '-c:a', 'aac', '-b:a', '96k', a_tmp
+                ]
 
                 try:
                     audio_success = False
@@ -886,7 +891,7 @@ def process_video(service, file_id, fname, data, batch_str, file_num, hold_uploa
                 if not audio_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 500:
                     print(f"⚠️ AUDIO ENCODE FAILED. Initiating fallback: Copying raw stream...", flush=True)
                     if os.path.exists(a_tmp): os.remove(a_tmp)
-                    fallback_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', str(start), '-i', temp_in, '-t', str(dur), '-vn', '-c:a', 'copy', a_tmp]
+                    fallback_cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-i', temp_in, '-ss', str(start), '-t', str(dur), '-vn', '-c:a', 'copy', a_tmp]
                     fallback_success = run_ffmpeg_process(fallback_cmd, dur, display_name, target_size_mb, f"Seg {i} - Audio Fallback", batch_str)
 
                     if not fallback_success or not os.path.exists(a_tmp) or os.path.getsize(a_tmp) < 100:
