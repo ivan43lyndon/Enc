@@ -380,11 +380,12 @@ async def native_hls_downloader(m3u8_url, session_cookies, target_output, file_n
         import subprocess
         cmd = [
             'ffmpeg', '-hide_banner', '-loglevel', 'error', '-y',
-            '-fflags', '+genpts+igndts',                 # Drops broken TS clock ticks and generates clean PTS
-            '-f', 'concat', '-safe', '0',
-            '-i', concat_list_path,
-            '-c', 'copy', '-bsf:a', 'aac_adtstoasc',     # Pure stream copy (fast, zero re-encoding)
-            '-avoid_negative_ts', 'make_zero',           # Shifts start timestamp strictly to 00:00:00
+            '-fflags', '+genpts+igndts',                 # Discards broken HLS stream clocks, generates fresh sequential PTS
+            '-f', 'concat', '-safe', '0', 
+            '-i', concat_list_path, 
+            '-c', 'copy', '-bsf:a', 'aac_adtstoasc',     # Pure stream copy (lightning fast)
+            '-avoid_negative_ts', 'make_zero',           # Locks start strictly to 00:00:00.000
+            '-video_track_timescale', '90000',           # Normalizes video stream clock to standard MP4 grid
             '-movflags', '+faststart',
             target_output
         ]
